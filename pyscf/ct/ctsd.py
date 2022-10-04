@@ -369,11 +369,19 @@ class CTSD(lib.StreamObject):
         t_xi = fock[self.t_nmo:, :self.c_nmo]
         t_xa = fock[self.t_nmo:, self.c_nmo:self.t_nmo]
 
-        t_xyab = self.eri[self.t_nmo:, self.t_nmo:,
-                 self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo]
-        t_xyij = self.eri[self.t_nmo:, self.t_nmo:, :self.c_nmo, :self.c_nmo]
-        t_xyai = self.eri[self.t_nmo:, self.t_nmo:, self.c_nmo:self.t_nmo,
-                 :self.c_nmo]
+        t_xyab = self.eri[self.t_nmo:, self.c_nmo:self.t_nmo,
+                 self.t_nmo:, self.c_nmo:self.t_nmo].copy().transpose((0, 2, 1,
+                                                                3))
+        t_xyij = self.eri[self.t_nmo:, :self.c_nmo, self.t_nmo:,
+                 :self.c_nmo].copy().transpose((0, 2, 1, 3))
+        #t_xyij = self.eri[:self.c_nmo, self.t_nmo:, :self.c_nmo,
+        #         self.t_nmo:].transpose((1, 3, 0, 2)).copy()
+        t_xyai = self.eri[self.t_nmo:, self.c_nmo:self.t_nmo, self.t_nmo:,
+                 :self.c_nmo].copy().transpose((0, 2, 1, 3))
+        # for test
+        t_abij = self.eri[self.c_nmo:self.t_nmo, :self.c_nmo,
+                 self.c_nmo:self.t_nmo:,
+                 :self.c_nmo].copy().transpose((0, 2, 1, 3))
 
         t_ai /= e_ai
         t_xi /= e_xi
@@ -381,10 +389,11 @@ class CTSD(lib.StreamObject):
 
         t_xyab /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
         t_xyij /= lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
+        t_abij /= lib.direct_sum("ai+bj -> abij", e_ai, e_ai)
         t_xyai /= lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
 
         t1 = {"ai": t_ai, "xi": t_xi, "xa": t_xa}
-        t2 = {"xyij": t_xyij, "xyab": t_xyab, "xyai": t_xyai}
+        t2 = {"xyij": t_xyij, "xyab": t_xyab, "xyai": t_xyai, "abij": t_abij}
 
         return t1, t2
 
@@ -615,9 +624,9 @@ class CTSD(lib.StreamObject):
         s6_xp = s6_mn[self.t_nmo:, :self.t_nmo]
 
         # s0
-        # will this modify the original t2_full? TODO: check
         t2 -= 1. / 2 * np.transpose(t2, (0, 1, 3, 2))
         s0_xipj = lib.einsum("xypq, xipj -> yiqj", t2, dm2_bar_xipj)
+        s0_xipj -= 1./2 * lib.einsum("xyqp, xipj -> yiqj", t2, dm2_bar_xipj)
 
         # constructing c1_prime
         c1_prime_mn = np.zeros([self.nmo, self.nmo])
@@ -635,7 +644,7 @@ class CTSD(lib.StreamObject):
                                                   s1_xipj)
 
         # second term in equation 44
-        v_minx = self.eri[:, :self.c_nmo, :, self.t_nmo:]
+        v_minx = self.eri[:, :self.c_nmo, :, self.t_nmo:].copy()
         v_minx -= 1. / 2 * self.eri[:, :self.c_nmo, self.t_nmo:,
                            :].transpose(0, 1, 3, 2)
         c1_prime_mn -= lib.einsum("minx, xi -> mn", v_minx, s2_xi)
@@ -663,7 +672,7 @@ class CTSD(lib.StreamObject):
                                                   v_mijp, s1_xipj)
 
         # second term in equation 45
-        v_minp = self.eri[:, :self.c_nmo, :, :self.t_nmo]
+        v_minp = self.eri[:, :self.c_nmo, :, :self.t_nmo].copy()
         v_mipn = self.eri[:, :self.c_nmo, :self.t_nmo, :]
         v_minp -= 1. / 2 * v_mipn.transpose((0, 1, 3, 2))
         c1_prime_mn += lib.einsum("minp, ip -> mn", v_minp, s3_ip)

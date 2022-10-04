@@ -91,20 +91,47 @@ class KnownValues(unittest.TestCase):
         pass
 
     def test_mp2_amps(self):
-        # Are the signs of the amplitudes consistently defined between refs?
         t1, t2 = myct.get_mp2_amps()
+        t2_xyij = t2["xyij"]
+        mymp2 = mp.MP2(mf)
+        eris = mymp2.ao2mo(mymp2.mo_coeff)
+        # assert mo energies are the same
+        assert np.array_equal(myct.mf.mo_energy, eris.mo_energy)
+
+        # assert eri are the same
+        ct_ovov = myct.eri[:myct.c_nmo, myct.c_nmo:, :myct.c_nmo,
+                  myct.c_nmo:]
+        nocc = mymp2.nocc
+        nvir = mymp2.nmo - nocc
+        mp2_ovov = eris.ovov.reshape(nocc, nvir, nocc, nvir)
+        assert np.allclose(ct_ovov, mp2_ovov)
+
+        mo_e_i = myct.mf.mo_energy[:myct.c_nmo]
+        # if regularization is needed, one can do it here.
+        mo_e_a = myct.mf.mo_energy[myct.c_nmo:myct.t_nmo]
+        mo_e_x = myct.mf.mo_energy[myct.t_nmo:]
+
+        ct_eoeo = myct.eri[myct.t_nmo:, :myct.c_nmo, myct.t_nmo:,
+                  :myct.c_nmo].copy()
+        ct_oeoe = myct.eri[:myct.c_nmo, myct.t_nmo:, :myct.c_nmo,
+                  myct.t_nmo:].copy()
+        assert np.allclose(ct_eoeo.transpose((1, 0, 3, 2)), ct_oeoe)
+        e_xi = -(mo_e_x[:, None] - mo_e_i[None, :])
+        t_xyij = ct_eoeo.transpose((0, 2, 1, 3))/lib.direct_sum(
+            "xi+yj->xyij", e_xi, e_xi)
+
         # use mp2 algo from pyscf to test
-        mp2_e, t2_mp2 = mp.MP2(mf).kernel(with_t2=True)
+        mp2_e, t2_mp2 = mymp2.kernel(with_t2=True)
+
 
         shift_ind = myct.v_nmo
         t2_mp2_xyij = t2_mp2[:, :, shift_ind:,
                       shift_ind:].transpose((2, 3, 0, 1))
-        # ??? What is happenning with the mp2 amplitudes in pyscf.mp???
-        # It is not symmetric?
-        assert np.array_equal(t2_mp2, t2_mp2.transpose(1, 0, 3, 2))
-        assert np.array_equal(t2["xyij"], t2_mp2_xyij)
+        # test symmetries in t2_mp2
+        assert np.allclose(t2_mp2_xyij, t2_mp2_xyij.transpose((1, 0, 3, 2)))
+        assert np.allclose(t_xyij, t2_mp2_xyij, atol=1e-7)
+        assert np.allclose(t2_xyij, t2_mp2_xyij, atol=1e-7)
 
-        pass
 
     def test_get_c0(self):
         pass
