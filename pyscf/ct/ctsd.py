@@ -30,7 +30,6 @@ from pyscf.lib import logger
 from pyscf import ao2mo
 from functools import reduce
 
-
 def get_d3_slice_direct(dm1=None, dm2=None, slices=None):
     """
     Function to compute a block of the 3-RDM, according to the provided
@@ -172,10 +171,16 @@ class CTSD(lib.StreamObject):
         self.max_memory = mf.max_memory
         self.t_basis = t_basis
         self.e_basis = e_basis
+        self._n_occ = None
         # total number of orbitals
         self.nmo = len(mf.mo_energy)
         # core orbitals are doubly occupied, indices i,j,k,l...
+        # currently only closed shell systems are supported
         self.c_nmo = int(np.sum(mf.mo_occ) / 2)
+        if self.c_nmo != self.get_n_occ():
+            raise RuntimeError("Fractional occupancies found! Current "
+                               "implementation only supports doubly occupied "
+                               "closted shell systems. Quit now.")
         # active orbitals are those which are fractionally or low-lying
         # virtuals, a,b,c,d...
         if v_nmo is None:
@@ -206,7 +211,7 @@ class CTSD(lib.StreamObject):
         self.callback = None
 
         if eri is None:
-           eri = self.get_full_eri()
+           eri = self.ao2mo()
         self.eri = eri
 
         # need 1-RDM and 2-RDM in mo representation.
@@ -245,7 +250,7 @@ class CTSD(lib.StreamObject):
         """
 
         if self.eri is None:
-            self.eri = self.get_full_eri()
+            self.eri = self.ao2mo()
 
         # initialize the amplitudes
         if self.t1 is None or self.t2 is None:
@@ -298,11 +303,14 @@ class CTSD(lib.StreamObject):
 
         return ct_0, ct_h1, ct_v2
 
-    def get_full_eri(self):
-        self.eri = ao2mo.incore.full(self.mf._eri, self.mf.mo_coeff)
+    def ao2mo(self, mo_coeff=None):
+        if mo_coeff is None:
+            mo_coeff = self.mf.mo_coeff
+        self.eri = ao2mo.incore.full(self.mf._eri, mo_coeff)
         # use no symmetries for initial implementation
         self.eri = ao2mo.restore(1, self.eri, self.nmo)
         return self.eri
+
     def get_n_occ(self):
         # count the number of singly, doubly and fractionally occupied orbitals
         if self._n_occ is None:
@@ -353,9 +361,9 @@ class CTSD(lib.StreamObject):
         mo_e_a = self.mf.mo_energy[self.c_nmo:self.t_nmo]
         mo_e_x = self.mf.mo_energy[self.t_nmo:]
 
-        e_xi = mo_e_x[:, None] - mo_e_i[None, :]
-        e_ai = mo_e_a[:, None] - mo_e_i[None, :]
-        e_xa = mo_e_x[:, None] - mo_e_a[None, :]
+        e_xi = -(mo_e_x[:, None] - mo_e_i[None, :])
+        e_ai = -(mo_e_a[:, None] - mo_e_i[None, :])
+        e_xa = -(mo_e_x[:, None] - mo_e_a[None, :])
 
         t_ai = fock[self.c_nmo:self.t_nmo, :self.c_nmo]
         t_xi = fock[self.t_nmo:, :self.c_nmo]
@@ -371,9 +379,9 @@ class CTSD(lib.StreamObject):
         t_xi /= e_xi
         t_xa /= e_xa
 
-        t_xyab /= lib.direct_sum("xa, yb -> xyab", e_xa, e_xa)
-        t_xyij /= lib.direct_sum("xi, yj -> xyij", e_xi, e_xi)
-        t_xyai /= lib.direct_sum("xa, yi -> xyai", e_xa, e_xi)
+        t_xyab /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
+        t_xyij /= lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
+        t_xyai /= lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
 
         t1 = {"ai": t_ai, "xi": t_xi, "xa": t_xa}
         t2 = {"xyij": t_xyij, "xyab": t_xyab, "xyai": t_xyai}
