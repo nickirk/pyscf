@@ -38,15 +38,19 @@ def get_d3_slice_direct(dm1=None, dm2=None, slices=None):
     Args:
         dm1: 2D array. 1-RDM
         dm2: 4D array. 2-RDM
-        slices: integers specifying the starting and stop position
+        slices: integers specifying the starting and stop positions
                 for each of the six indices of D^{p1p2p3}_{q1q2q3}.
-                When the length of slices is smaller than 12, the other
-                unspecified index will assume full range.
                 Example input:
                 [0, 100, 0, 100, 0, 50, 0, 100, 0, 100, 0, 50]
+                If set to None, get the full d3 tensor.
     Returns:
         d3: 6D array.
     """
+    if slices is None:
+        nmo = dm1.shape[0]
+        slices = [0, nmo, 0, nmo, 0, nmo, 0, nmo, 0, nmo, 0, nmo]
+    if len(slices) != 12:
+        raise RuntimeError("Length of slices is not 12!")
     p1_lo, p2_lo, p3_lo, q1_lo, q2_lo, q3_lo = slices[::2]
     p1_up, p2_up, p3_up, q1_up, q2_up, q3_up = slices[1::2]
 
@@ -194,9 +198,14 @@ class CTSD(lib.StreamObject):
         self.e_nmo = self.nmo - self.t_nmo
         #self.incore_complete = self.incore_complete or self.mol.incore_anyway
 
+        self.ct_0 = None
+        self.ct_h1 = None
+        self.ct_v2 = None
+        self.mo_energy = None
         ##################################################
         # don't modify the following attributes, they are not input options
         self.mo_coeff = mo_coeff
+
         self.mo_occ = mo_occ
         self.emp2 = None
         self.e_hf = None
@@ -217,8 +226,8 @@ class CTSD(lib.StreamObject):
         # need 1-RDM and 2-RDM in mo representation.
         if dm1 is None or dm2 is None:
             dm1 = np.diag(self.mf.mo_occ)
-            dm2 = (np.einsum('ij, kl -> ijkl', dm1, dm1)
-                   - np.einsum('ij, kl -> iklj', dm1, dm1)/2)
+            dm2 = (np.einsum('ij, kl -> ijkl', dm1, dm1) - np.einsum(
+                'ij, kl -> ijlk', dm1, dm1) / 2)
         self.dm1 = dm1
         self.dm2 = dm2
 
@@ -260,6 +269,8 @@ class CTSD(lib.StreamObject):
 
         # we need the one-body part of the original Hamiltonian h_mn
         h_mn = self.mf.get_hcore()
+        h_mn = reduce(np.dot, (self.mf.mo_coeff.conj().T, h_mn,
+                              self.mf.mo_coeff))
         c1_mn = self.get_c1(h_mn)
 
         # [h1, T2] contribution is 0.
@@ -292,15 +303,24 @@ class CTSD(lib.StreamObject):
         ct_v2_tmp += ct_v2.transpose((3, 2, 1, 0))
         ct_v2 = 1./4 * ct_v2_tmp
 
+        ct_v2 += self.eri
+
         # The second commutator 1/2*[[F, T], T]
         # First construct F, the Fock matrix, as an approximation to H
+        # Notice fock has to be in mo basis
+
         fock_mn = self.mf.get_fock()
+        fock_mn = reduce(np.dot, (self.mf.mo_coeff.conj().T, fock_mn,
+                               self.mf.mo_coeff))
+
         ct_h1 += 1/.2 * self.commute_o1_t(self.commute_o1_t(fock_mn))
 
 
         # final step might need to do some transformation on the eris so that
         # other solvers can use it directly as usual integrals.
-
+        self.ct_0 = ct_0
+        self.ct_h1 = ct_h1
+        self.ct_v2 = ct_v2
         return ct_0, ct_h1, ct_v2
 
     def ao2mo(self, mo_coeff=None):
@@ -308,7 +328,8 @@ class CTSD(lib.StreamObject):
             mo_coeff = self.mf.mo_coeff
         self.eri = ao2mo.incore.full(self.mf._eri, mo_coeff)
         # use no symmetries for initial implementation
-        self.eri = ao2mo.restore(1, self.eri, self.nmo)
+        # transpose to Physicsts notation
+        self.eri = ao2mo.restore(1, self.eri, self.nmo).transpose((0, 2, 1, 3))
         return self.eri
 
     def get_n_occ(self):
@@ -369,19 +390,15 @@ class CTSD(lib.StreamObject):
         t_xi = fock[self.t_nmo:, :self.c_nmo]
         t_xa = fock[self.t_nmo:, self.c_nmo:self.t_nmo]
 
-        t_xyab = self.eri[self.t_nmo:, self.c_nmo:self.t_nmo,
-                 self.t_nmo:, self.c_nmo:self.t_nmo].copy().transpose((0, 2, 1,
-                                                                3))
-        t_xyij = self.eri[self.t_nmo:, :self.c_nmo, self.t_nmo:,
-                 :self.c_nmo].copy().transpose((0, 2, 1, 3))
-        #t_xyij = self.eri[:self.c_nmo, self.t_nmo:, :self.c_nmo,
-        #         self.t_nmo:].transpose((1, 3, 0, 2)).copy()
-        t_xyai = self.eri[self.t_nmo:, self.c_nmo:self.t_nmo, self.t_nmo:,
-                 :self.c_nmo].copy().transpose((0, 2, 1, 3))
+        t_xyab = self.eri[self.t_nmo:, self.t_nmo:,
+                 self.c_nmo:self.t_nmo:, self.c_nmo:self.t_nmo].copy()
+        t_xyij = self.eri[self.t_nmo:, self.t_nmo:, :self.c_nmo,
+                 :self.c_nmo].copy()
+        t_xyai = self.eri[self.t_nmo:, self.t_nmo:, self.c_nmo:self.t_nmo,
+                 :self.c_nmo].copy()
         # for test
-        t_abij = self.eri[self.c_nmo:self.t_nmo, :self.c_nmo,
-                 self.c_nmo:self.t_nmo:,
-                 :self.c_nmo].copy().transpose((0, 2, 1, 3))
+        t_abij = self.eri[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo,
+                 :self.c_nmo, :self.c_nmo].copy()
 
         t_ai /= e_ai
         t_xi /= e_xi
@@ -548,6 +565,11 @@ class CTSD(lib.StreamObject):
         """
         Calculate the constant contribution to energy from CT.
         """
+
+        if dm1 is None:
+            dm1 = self.dm1
+        if dm2 is None:
+            dm2 = self.dm2
         # construct Do^{p1p2e2}_{a1q2a2}
         dm2 = get_d_zero(dm1, dm2)
         # need a slice of the full ERI
@@ -624,7 +646,6 @@ class CTSD(lib.StreamObject):
         s6_xp = s6_mn[self.t_nmo:, :self.t_nmo]
 
         # s0
-        t2 -= 1. / 2 * np.transpose(t2, (0, 1, 3, 2))
         s0_xipj = lib.einsum("xypq, xipj -> yiqj", t2, dm2_bar_xipj)
         s0_xipj -= 1./2 * lib.einsum("xyqp, xipj -> yiqj", t2, dm2_bar_xipj)
 
@@ -787,8 +808,24 @@ class CTSD(lib.StreamObject):
         c2_dprime_mnuv *= 4.
         return c2_dprime_mnuv
 
-    def get_hf_energy(self):
-        return
+    def get_hf_energy(self, c0=None, c1=None, c2=None):
+        e_hf = lib.einsum("pq, pq -> ", self.dm1, c1)
+        e_hf += lib.einsum("pqrs, pqrs -> ", self.dm2, c2)
+        e_hf += c0
+
+        #e_hf_ = lib.einsum()
+        return e_hf
+
+    def get_mo_energy(self):
+        if self.mo_energy is None:
+            mo_e_mf = self.mf.mo_energy
+            mo_energy = self.ct_h1.copy()
+            mo_energy += 2 * lib.einsum("ijij -> ij", self.ct_v2)
+            mo_energy -= lib.einsum("ijji -> ij", self.ct_v2)
+            self.mo_energy = mo_energy.diagonal()
+
+        return self.mo_energy
+
 class _PhysicistsERIs:
     """
     <pq|rs>
@@ -850,8 +887,6 @@ class _PhysicistsERIs:
             mo_coeff = ct.mo_coeff
         self.mo_coeff = mo_coeff
 
-        # Note: Recomputed fock matrix and HF energy since SCF may not be 
-        # fully converged.
         fock_ao = ct.mf.get_fock()
         self.fock = reduce(np.dot, (mo_coeff.conj().T, fock_ao, mo_coeff))
         # self.e_hf = ct.mf.energy_tot(dm=dm, vhf=vhf)
