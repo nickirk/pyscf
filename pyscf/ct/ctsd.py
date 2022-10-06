@@ -208,12 +208,12 @@ class CTSD(lib.StreamObject):
         self.emp2 = None
         self.e_hf = None
         self.e_corr = None
-        self.t1 = None
-        # partitioned t2 is dict
-        self.t2 = None
-        self.t2_full = None
+        self._t2s = np.zeros([self.e_nmo, self.e_nmo, self.t_nmo, self.t_nmo])
+        self._t1s = np.zeros([self.e_nmo, self.t_nmo])
+        self.t1, self.t2 = self.part_amps()
         self._n_occ = None
         self._nmo = None
+        self._amps_algo = None
         self.chkfile = mf.chkfile
         self.callback = None
 
@@ -258,14 +258,14 @@ class CTSD(lib.StreamObject):
 
         # initialize the amplitudes
         if self.t1 is None or self.t2 is None:
-            self.t1, self.t2 = self.init_amps(algo="mp2")
+            self.amps_algo = "mp2"
+            self.t1, self.t2 = self.init_amps()
 
 
 
         # we need the one-body part of the original Hamiltonian h_mn
         h_mn = self.mf.get_hcore()
-        h_mn = reduce(np.dot, (self.mf.mo_coeff.conj().T, h_mn,
-                              self.mf.mo_coeff))
+        h_mn = self.ao2mo(h_mn)
         c1_mn = self.get_c1(h_mn)
 
         # [h1, T2] contribution is 0.
@@ -305,8 +305,7 @@ class CTSD(lib.StreamObject):
         # Notice fock has to be in mo basis
 
         fock_mn = self.mf.get_fock()
-        fock_mn = reduce(np.dot, (self.mf.mo_coeff.conj().T, fock_mn,
-                               self.mf.mo_coeff))
+        fock_mn = self.ao2mo(fock_mn)
 
         ct_h1 += 1/.2 * self.commute_o1_t(self.commute_o1_t(fock_mn))
 
@@ -328,14 +327,29 @@ class CTSD(lib.StreamObject):
                                "mp2, zero, f12")
         self._amps_algo = algo
 
-    def ao2mo(self, mo_coeff=None):
+    def ao2mo(self, t=None, mo_coeff=None):
+        """
+        Args:
+            t: 2D or 4D tensor in ao rep.
+            mo_coeff: 2D matrix. [nao, nmo]
+
+        Returns:
+            t_mo: 2D or 4D tensor in mo rep, the same size as the input t.
+
+        """
         if mo_coeff is None:
             mo_coeff = self.mf.mo_coeff
-        self.eri = ao2mo.incore.full(self.mf._eri, mo_coeff)
-        # use no symmetries for initial implementation
-        # transpose to Physicsts notation
-        self.eri = ao2mo.restore(1, self.eri, self.nmo).transpose((0, 2, 1, 3))
-        return self.eri
+        if t is None or len(t.shape) == 4:
+            self.eri = ao2mo.incore.full(self.mf._eri, mo_coeff)
+            # use no symmetries for initial implementation
+            # transpose to Physicsts notation
+            self.eri = ao2mo.restore(1, self.eri, self.nmo).transpose((0, 2, 1, 3))
+            return self.eri
+        elif len(t.shape) == 2:
+            t_mo = reduce(np.dot, (mo_coeff.conj().T, t, mo_coeff))
+            return t_mo
+        else:
+            raise NotImplementedError
 
     @property
     def n_occ(self):
@@ -346,23 +360,64 @@ class CTSD(lib.StreamObject):
     def n_occ(self, nocc):
         self._n_occ = nocc
 
-    def get_t2_full(self):
-        # get t2_full
-        if self.t2_full is None:
-            self.t2_full = np.zeros([self.e_nmo, self.e_nmo,
-                                     self.t_nmo,
-                                     self.t_nmo])
-            if self.t2["xyij"] is None or self.t2["xyab"] is None or self.t2[
-                "xyai"] is None:
-                print("Block t2 amps not initialized! Initializing it using "
-                      "default algo mp2.")
-                self.init_amps(algo="mp2")
-            self.t2_full[:, :, :self.c_nmo, :self.c_nmo] = self.t2["xyij"]
-            self.t2_full[:, :, self.c_nmo:, self.c_nmo:] = self.t2["xyab"]
-            self.t2_full[:, :, self.c_nmo:, :self.c_nmo] = self.t2["xyai"]
-            self.t2_full[:, :, :self.c_nmo, self.c_nmo:] = np.transpose(
-                self.t2["xyai"], (0, 1, 3, 2))
-        return self.t2_full
+    @property
+    def t2s(self):
+        # get _t2s
+        return self._t2s
+
+    @t2s.setter
+    def t2s(self, t2):
+        """
+        Args:
+            t2: 4D tensor. [nmo, nmo, nmo, nmo]
+        """
+        self._t2s = t2
+        self.part_t2s()
+
+    @property
+    def t1s(self):
+        # get _t2s
+        return self._t1s
+
+    @t1s.setter
+    def t1s(self, t1):
+        """
+        Args:
+            t1: 2D tensor. [nmo, nmo]
+        """
+        self._t1s = t1
+        self.part_t1s()
+
+    def part_amps(self):
+        self.part_t1s()
+        self.part_t2s()
+        return self.t1, self.t2
+
+    def part_t2s(self):
+        t_xyij = self._t2s[:, :, :self.c_nmo, :self.c_nmo]
+        t_xyab = self._t2s[:, :, self.c_nmo:, self.c_nmo:]
+        t_xyai = self._t2s[:, :, self.c_nmo:, :self.c_nmo]
+        self.t2 = {"xyij": t_xyij, "xyab": t_xyab, "xyai": t_xyai}
+
+    def part_t1s(self):
+        t_xi = self._t1s[:, :self.c_nmo]
+        t_xa = self._t1s[:, self.c_nmo:]
+        self.t1 = {"xi": t_xi, "xa": t_xa}
+
+    #def update_t2_full(self):
+    #    self._t2s = np.zeros([self.e_nmo, self.e_nmo,
+    #                          self.t_nmo,
+    #                          self.t_nmo])
+    #    if self.t2["xyij"] is None or self.t2["xyab"] is None or self.t2[
+    #        "xyai"] is None:
+    #        print("Block t2 amps not initialized! Initializing it using "
+    #              "default algo mp2.")
+    #        self.init_amps(algo="mp2")
+    #    self._t2s[:, :, :self.c_nmo, :self.c_nmo] = self.t2["xyij"]
+    #    self._t2s[:, :, self.c_nmo:, self.c_nmo:] = self.t2["xyab"]
+    #    self._t2s[:, :, self.c_nmo:, :self.c_nmo] = self.t2["xyai"]
+    #    self._t2s[:, :, :self.c_nmo, self.c_nmo:] = np.transpose(
+    #        self.t2["xyai"], (0, 1, 3, 2))
 
     def init_amps(self, algo="mp2"):
         """
@@ -374,35 +429,40 @@ class CTSD(lib.StreamObject):
         Returns:
 
         """
-        if algo == "mp2":
-            t1, t2 = self.get_mp2_amps()
-        elif algo == "f12":
-            t1, t2 = self.get_f12_amps()
-        elif algo =="zero":
-            t1, t2 = self.get_zero_amps()
+        self._amps_algo = algo
+        # self.part_amps()
+        self.t1, self.t2 = self.get_amps()
+        #self.update_t2_full()
+        return self.t1, self.t2
+
+    def get_amps(self):
+        if self._amps_algo == "mp2":
+            return self.get_mp2_amps()
+        elif self._amps_algo == "zero":
+            return self.get_zero_amps()
         else:
             raise NotImplementedError
-        return t1, t2
 
     def get_zero_amps(self):
         # for test purpose
-        t_ai = np.zeros([self.a_nmo, self.c_nmo])
-        t_xi = np.zeros([self.e_nmo, self.c_nmo])
-        t_xa = np.zeros([self.e_nmo, self.a_nmo])
+        #self.t1["ai"] = np.zeros([self.a_nmo, self.c_nmo])
+        self.t1["xi"] = np.zeros([self.e_nmo, self.c_nmo])
+        self.t1["xa"] = np.zeros([self.e_nmo, self.a_nmo])
 
-        t_xyij = np.zeros([self.e_nmo, self.e_nmo, self.c_nmo, self.c_nmo])
-        t_xyab = np.zeros([self.e_nmo, self.e_nmo, self.a_nmo, self.a_nmo])
-        t_xyai = np.zeros([self.e_nmo, self.e_nmo, self.a_nmo, self.c_nmo])
-        t_abij = np.zeros([self.a_nmo, self.a_nmo, self.c_nmo, self.c_nmo])
-
-        self.t1 = {"ai": t_ai, "xi": t_xi, "xa": t_xa}
-        self.t2 = {"xyij": t_xyij, "xyab": t_xyab, "xyai": t_xyai, "abij":
-            t_abij}
-
+        self.t2["xyij"] = np.zeros([self.e_nmo, self.e_nmo, self.c_nmo,
+                                    self.c_nmo])
+        self.t2["xyab"] = np.zeros([self.e_nmo, self.e_nmo, self.a_nmo,
+                                    self.a_nmo])
+        self.t2["xyai"] = np.zeros([self.e_nmo, self.e_nmo, self.a_nmo,
+                                    self.c_nmo])
+        #self.t2["abij"] = np.zeros([self.a_nmo, self.a_nmo, self.c_nmo,
+        #                         self.c_nmo])
         return self.t1, self.t2
 
     def get_mp2_amps(self):
-        fock = self.mf.get_fock()
+
+        fock_mn = self.mf.get_fock()
+        fock_mn = self.ao2mo(fock_mn)
 
         mo_e_i = self.mf.mo_energy[:self.c_nmo]
         # if regularization is needed, one can do it here.
@@ -413,33 +473,30 @@ class CTSD(lib.StreamObject):
         e_ai = -(mo_e_a[:, None] - mo_e_i[None, :])
         e_xa = -(mo_e_x[:, None] - mo_e_a[None, :])
 
-        t_ai = fock[self.c_nmo:self.t_nmo, :self.c_nmo]
-        t_xi = fock[self.t_nmo:, :self.c_nmo]
-        t_xa = fock[self.t_nmo:, self.c_nmo:self.t_nmo]
+        #self.t1["ai"] = fock_mn[self.c_nmo:self.t_nmo, :self.c_nmo]
+        self.t1["xi"] = fock_mn[self.t_nmo:, :self.c_nmo]
+        self.t1["xa"] = fock_mn[self.t_nmo:, self.c_nmo:self.t_nmo]
 
-        t_xyab = self.eri[self.t_nmo:, self.t_nmo:,
-                 self.c_nmo:self.t_nmo:, self.c_nmo:self.t_nmo].copy()
-        t_xyij = self.eri[self.t_nmo:, self.t_nmo:, :self.c_nmo,
-                 :self.c_nmo].copy()
-        t_xyai = self.eri[self.t_nmo:, self.t_nmo:, self.c_nmo:self.t_nmo,
-                 :self.c_nmo].copy()
+        self.t2["xyab"] = self.eri[self.t_nmo:, self.t_nmo:,
+                        self.c_nmo:self.t_nmo:, self.c_nmo:self.t_nmo].copy()
+        self.t2["xyij"] = self.eri[self.t_nmo:, self.t_nmo:, :self.c_nmo,
+                               :self.c_nmo].copy()
+        self.t2["xyai"] = self.eri[self.t_nmo:, self.t_nmo:,
+                          self.c_nmo:self.t_nmo, :self.c_nmo].copy()
         # for test
-        t_abij = self.eri[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo,
-                 :self.c_nmo, :self.c_nmo].copy()
+        #self.t2["abij"] = self.eri[self.c_nmo:self.t_nmo,
+        ## self.c_nmo:self.t_nmo,#
+        #:self.c_nmo, :self.c_nmo].copy()
 
-        t_ai /= e_ai
-        t_xi /= e_xi
-        t_xa /= e_xa
+        self.t1["xi"] /= e_xi
+        self.t1["xa"] /= e_xa
 
-        t_xyab /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
-        t_xyij /= lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
-        t_abij /= lib.direct_sum("ai+bj -> abij", e_ai, e_ai)
-        t_xyai /= lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
+        self.t2["xyab"] /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
+        self.t2["xyij"] /= lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
+        #self.t2["abij"] /= lib.direct_sum("ai+bj -> abij", e_ai, e_ai)
+        self.t2["xyai"] /= lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
 
-        t1 = {"ai": t_ai, "xi": t_xi, "xa": t_xa}
-        t2 = {"xyij": t_xyij, "xyab": t_xyab, "xyai": t_xyai, "abij": t_abij}
-
-        return t1, t2
+        return self.t1, self.t2
 
     def get_f12_amps(self):
         raise NotImplementedError
@@ -477,6 +534,7 @@ class CTSD(lib.StreamObject):
         """
         if o_mn is None:
             o_mn = self.mf.get_hcore()
+            o_mn = self.ao2mo(o_mn)
         o_mx = o_mn[:, self.t_nmo:]
         o_mi = o_mn[:, :self.c_nmo]
         o_ma = o_mn[:, self.c_nmo:self.t_nmo]
@@ -607,7 +665,7 @@ class CTSD(lib.StreamObject):
         slices = [0, self.nmo, 0, self.nmo, self.t_nmo, self.nmo,
                   0, self.t_nmo, 0, self.nmo, 0, self.t_nmo]
         d3 = get_d3_slice(dm1, dm2, slices)
-        t2 = self.get_t2_full()
+        t2 = self._t2s
         c0 = 2.0 * lib.einsum("mnxu, xypq, mnypuq ->", v_mnxu, t2,
                               d3)
         v_mnpu = self.eri[:, :, :self.t_nmo, :]
@@ -634,7 +692,7 @@ class CTSD(lib.StreamObject):
         """
 
         # need the original t2
-        t2 = self.get_t2_full()
+        t2 = self._t2s
         # second term in 46b
         dm2_bar_xipj = dm2_bar[self.t_nmo:, :self.c_nmo, :self.t_nmo,
                        :self.c_nmo]
@@ -749,7 +807,7 @@ class CTSD(lib.StreamObject):
         """
 
         # Construct T0-T3 intermediates first.
-        t2 = self.get_t2_full()
+        t2 = self._t2s
         cap_t0_xyip = lib.einsum("xypq, ip -> xyiq", t2, dm1[:self.c_nmo,
                                                          :self.t_nmo])
         cap_t1_ixpq = lib.einsum("xypq, ix -> iypq", t2, dm1[:self.c_nmo,
@@ -836,10 +894,17 @@ class CTSD(lib.StreamObject):
         return c2_dprime_mnuv
 
     def get_hf_energy(self, c0=None, c1=None, c2=None):
-        # using DM to calculate energy is expensive
-        # TODO fix it
-        e_hf = lib.einsum("pq, pq -> ", self.dm1, c1)
-        e_hf += 0.5 * lib.einsum("pqrs, pqrs -> ", self.dm2, c2)
+        if c0 is None:
+            c0 = self.ct_0
+        if c1 is None:
+            c1 = self.ct_h1
+        if c2 is None:
+            c2 = self.ct_v2
+        e_hf = 2. * lib.einsum("ii -> ", c1[:self.c_nmo, :self.c_nmo])
+        e_hf += 2. * lib.einsum("ijij -> ", c2[:self.c_nmo, :self.c_nmo,
+                                             :self.c_nmo, :self.c_nmo])
+        e_hf -= lib.einsum("ijji -> ", c2[:self.c_nmo, :self.c_nmo,
+                                            :self.c_nmo, :self.c_nmo])
         e_hf += c0
 
         e_hf += self.mf.energy_nuc()
@@ -880,7 +945,7 @@ class _PhysicistsERIs:
         self.mol = mol
         self.mo_coeff = None
         self.n_occ = None
-        self.fock = None
+        self.fock_mn = None
         self.e_hf = None
 
         # There are 3x3x3 = 27 partitions...with 4-fold symmetry
