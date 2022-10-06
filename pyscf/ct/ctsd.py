@@ -160,7 +160,7 @@ class CTSD(lib.StreamObject):
     """
 
     def __init__(self, mf, t_basis=None, e_basis=None,
-                 v_nmo=None, mo_coeff=None, mo_occ=None,
+                 a_nmo=None, mo_coeff=None, mo_occ=None,
                  dm1=None, dm2=None, eri=None):
         """
         mf: mean field object.
@@ -175,24 +175,19 @@ class CTSD(lib.StreamObject):
         self.max_memory = mf.max_memory
         self.t_basis = t_basis
         self.e_basis = e_basis
-        self._n_occ = None
         # total number of orbitals
         self.nmo = len(mf.mo_energy)
         # core orbitals are doubly occupied, indices i,j,k,l...
         # currently only closed shell systems are supported
         self.c_nmo = int(np.sum(mf.mo_occ) / 2)
-        if self.c_nmo != self.get_n_occ():
-            raise RuntimeError("Fractional occupancies found! Current "
-                               "implementation only supports doubly occupied "
-                               "closted shell systems. Quit now.")
         # active orbitals are those which are fractionally or low-lying
         # virtuals, a,b,c,d...
-        if v_nmo is None:
-            v_nmo = int(self.c_nmo * 1.2)
-        self.v_nmo = v_nmo
+        if a_nmo is None:
+            a_nmo = int(self.c_nmo * 1.2)
+        self.a_nmo = a_nmo
         # target orbitals are the combination of core and active orbitals, 
         # indices p,q,r,s
-        self.t_nmo = v_nmo + self.c_nmo
+        self.t_nmo = a_nmo + self.c_nmo
         # external orbitals are empty virtuals excluding the ones that are 
         # included in active space, x,y,z
         self.e_nmo = self.nmo - self.t_nmo
@@ -201,10 +196,13 @@ class CTSD(lib.StreamObject):
         self.ct_0 = None
         self.ct_h1 = None
         self.ct_v2 = None
-        self.mo_energy = None
+        if eri is None:
+            eri = self.ao2mo()
+        self.eri = eri
         ##################################################
         # don't modify the following attributes, they are not input options
         self.mo_coeff = mo_coeff
+        self._mo_energy = None
 
         self.mo_occ = mo_occ
         self.emp2 = None
@@ -219,15 +217,12 @@ class CTSD(lib.StreamObject):
         self.chkfile = mf.chkfile
         self.callback = None
 
-        if eri is None:
-           eri = self.ao2mo()
-        self.eri = eri
 
         # need 1-RDM and 2-RDM in mo representation.
         if dm1 is None or dm2 is None:
             dm1 = np.diag(self.mf.mo_occ)
-            dm2 = (np.einsum('ij, kl -> ijkl', dm1, dm1) - np.einsum(
-                'ij, kl -> ijlk', dm1, dm1) / 2)
+            dm2 = (np.einsum('ij, kl -> ikjl', dm1, dm1) - np.einsum(
+                'ij, kl -> iklj', dm1, dm1) / 2)
         self.dm1 = dm1
         self.dm2 = dm2
 
@@ -323,6 +318,16 @@ class CTSD(lib.StreamObject):
         self.ct_v2 = ct_v2
         return ct_0, ct_h1, ct_v2
 
+    @property
+    def amps_algo(self):
+        return self._amps_algo
+    @amps_algo.setter
+    def amps_algo(self, algo):
+        if not isinstance(algo, str):
+            raise RuntimeError("algo name has to be the following strings: "
+                               "mp2, zero, f12")
+        self._amps_algo = algo
+
     def ao2mo(self, mo_coeff=None):
         if mo_coeff is None:
             mo_coeff = self.mf.mo_coeff
@@ -332,11 +337,14 @@ class CTSD(lib.StreamObject):
         self.eri = ao2mo.restore(1, self.eri, self.nmo).transpose((0, 2, 1, 3))
         return self.eri
 
-    def get_n_occ(self):
-        # count the number of singly, doubly and fractionally occupied orbitals
+    @property
+    def n_occ(self):
         if self._n_occ is None:
             self._n_occ = np.count_nonzero(self.mf.mo_occ)
         return self._n_occ
+    @n_occ.setter
+    def n_occ(self, nocc):
+        self._n_occ = nocc
 
     def get_t2_full(self):
         # get t2_full
@@ -370,9 +378,28 @@ class CTSD(lib.StreamObject):
             t1, t2 = self.get_mp2_amps()
         elif algo == "f12":
             t1, t2 = self.get_f12_amps()
+        elif algo =="zero":
+            t1, t2 = self.get_zero_amps()
         else:
             raise NotImplementedError
         return t1, t2
+
+    def get_zero_amps(self):
+        # for test purpose
+        t_ai = np.zeros([self.a_nmo, self.c_nmo])
+        t_xi = np.zeros([self.e_nmo, self.c_nmo])
+        t_xa = np.zeros([self.e_nmo, self.a_nmo])
+
+        t_xyij = np.zeros([self.e_nmo, self.e_nmo, self.c_nmo, self.c_nmo])
+        t_xyab = np.zeros([self.e_nmo, self.e_nmo, self.a_nmo, self.a_nmo])
+        t_xyai = np.zeros([self.e_nmo, self.e_nmo, self.a_nmo, self.c_nmo])
+        t_abij = np.zeros([self.a_nmo, self.a_nmo, self.c_nmo, self.c_nmo])
+
+        self.t1 = {"ai": t_ai, "xi": t_xi, "xa": t_xa}
+        self.t2 = {"xyij": t_xyij, "xyab": t_xyab, "xyai": t_xyai, "abij":
+            t_abij}
+
+        return self.t1, self.t2
 
     def get_mp2_amps(self):
         fock = self.mf.get_fock()
@@ -554,7 +581,7 @@ class CTSD(lib.StreamObject):
                  self.c_nmo:self.t_nmo] = ovvv
 
         v2_vvev = v2[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo, self.t_nmo:,
-                     self.c_nmo:self.v_nmo]
+                     self.c_nmo:self.a_nmo]
         vvvv = 4. * lib.einsum("abxd, xc -> abcd", v2_vvev, self.t1["xa"])
         c2_prime[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo,
                  self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo] = vvvv
@@ -809,22 +836,35 @@ class CTSD(lib.StreamObject):
         return c2_dprime_mnuv
 
     def get_hf_energy(self, c0=None, c1=None, c2=None):
+        # using DM to calculate energy is expensive
+        # TODO fix it
         e_hf = lib.einsum("pq, pq -> ", self.dm1, c1)
-        e_hf += lib.einsum("pqrs, pqrs -> ", self.dm2, c2)
+        e_hf += 0.5 * lib.einsum("pqrs, pqrs -> ", self.dm2, c2)
         e_hf += c0
 
-        #e_hf_ = lib.einsum()
+        e_hf += self.mf.energy_nuc()
         return e_hf
 
-    def get_mo_energy(self):
-        if self.mo_energy is None:
-            mo_e_mf = self.mf.mo_energy
-            mo_energy = self.ct_h1.copy()
-            mo_energy += 2 * lib.einsum("ijij -> ij", self.ct_v2)
-            mo_energy -= lib.einsum("ijji -> ij", self.ct_v2)
-            self.mo_energy = mo_energy.diagonal()
+    @property
+    def mo_energy(self):
+        if self._mo_energy is None:
+            mo_energy = self.get_mo_energy()
+            self._mo_energy = mo_energy.copy()
+        return mo_energy
 
-        return self.mo_energy
+    @mo_energy.setter
+    def mo_energy(self, value):
+        self._mo_energy = value
+
+    def get_mo_energy(self):
+        mo_energy = self.ct_h1.copy()
+        mo_energy += 2 * lib.einsum("piqi -> pq", self.ct_v2[:, :self.c_nmo,
+                                                  :, :self.c_nmo])
+        mo_energy -= lib.einsum("piiq -> pq", self.ct_v2[:, :self.c_nmo,
+                                              :self.c_nmo, :])
+        mo_energy = mo_energy.diagonal()
+        return mo_energy
+
 
 class _PhysicistsERIs:
     """

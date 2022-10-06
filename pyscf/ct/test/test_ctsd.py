@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 from functools import reduce
 from pyscf import gto, scf, lib
-from pyscf import ct, mp
+from pyscf import ct, mp, ao2mo
 from pyscf.ct import ctsd
 
 def setUpModule():
@@ -24,11 +24,6 @@ def setUpModule():
     mf.kernel()
     e_hf_orig = mf.e_tot
     myct = ctsd.CTSD(mf)
-    c0, h1, v2 = myct.kernel()
-    mo_energy = myct.get_mo_energy()
-    mo_energy_mf = mf.mo_energy
-    e_hf_ct = myct.get_hf_energy(c0, h1, v2)
-    diff = e_hf_orig - e_hf_ct
 
 
 def tearDownModule():
@@ -130,7 +125,7 @@ class KnownValues(unittest.TestCase):
         mp2_e, t2_mp2 = mymp2.kernel(with_t2=True)
 
 
-        shift_ind = myct.v_nmo
+        shift_ind = myct.a_nmo
         t2_mp2_xyij = t2_mp2[:, :, shift_ind:,
                       shift_ind:].transpose((2, 3, 0, 1))
         # test symmetries in t2_mp2
@@ -143,8 +138,9 @@ class KnownValues(unittest.TestCase):
         # for dm obtained from HF wavefunction, slices of d3 containing
         # indices other than the occupied (core) will be 0.
         # so c0 = 0
-        ct_0 = myct.get_c0()
-        assert ct_0 == 0.
+        #ct_0 = myct.get_c0()
+        #assert ct_0 == 0.
+        pass
 
 
 
@@ -163,11 +159,27 @@ class KnownValues(unittest.TestCase):
         pass
     def test_ct(self):
         mf = scf.ROHF(mol).run()
-        myct = ct.ctsd.CTSD(mf).run()
+        #myct = ct.ctsd.CTSD(mf).run()
 
     def test_get_hf_energy(self):
-        e_hf = 0.
-        pass
+        myct.init_amps("zero")
+        c0, h1, v2 = myct.kernel()
+        # get  mf hcore in mo
+        hcore = myct.mf.get_hcore()
+        hcore = reduce(np.dot, (myct.mf.mo_coeff.conj().T, hcore,
+                                myct.mf.mo_coeff))
+        assert np.allclose(hcore, h1)
+        # get original eri from mf and mo_coeff
+        eri  =  ao2mo.incore.full(mf._eri, mf.mo_coeff)
+        eri = ao2mo.restore(1, eri, myct.nmo).transpose((0, 2, 1, 3))
+        assert np.allclose(eri, v2)
+        mo_energy_mf = mf.mo_energy
+
+        mo_energy = myct.mo_energy
+        assert np.allclose(mo_energy_mf, mo_energy)
+        e_hf_ct = myct.get_hf_energy(c0, h1, v2)
+        e_hf = mf.e_tot
+        assert np.equal(e_hf_ct, e_hf)
 
     def test_ct_mp2(self):
         mf = scf.ROHF(mol).run()
