@@ -103,11 +103,6 @@ def get_d_zero(dm1=None, dm2=None):
     Returns:
         d0: 4D array. Modified 2-RDM
     """
-    # TODO: dm1 or dm2 not provided, get them from  mf.
-    # TODO: if mf dm's are used, they might have special structure in mo.
-    #  Avoid brutal force evaluation.
-    # if dm2 is None:
-    #     get dm2 from mf
 
     d0 = -dm2
     d0 += 4. / 3 * lib.einsum("mn, uv -> munv", dm1, dm1)
@@ -128,11 +123,6 @@ def get_d_bar(dm1=None, dm2=None):
     Returns:
         d_bar: 4D array. Modified 2-RDM
     """
-    # TODO: dm1 or dm2 not provided, get them from  mf.
-    # TODO: if mf dm's are used, they might have special structure in mo.
-    #  Avoid brutal force evaluation.
-    # if dm2 is None:
-    #     get dm2 from mf
 
     d_bar = -dm2
     d_bar += 2. * lib.einsum("mn, uv -> munv", dm1, dm1)
@@ -155,8 +145,9 @@ class CTSD(lib.StreamObject):
        e_basis: external basis set. Indices, x, y, z
 
     Saved results:
-        ct_h_pq: transformed 1-body integrals.
-        ct_V_pqrs: transformed 2-body integrals.
+        ct_0
+        ct_h1: transformed 1-body integrals.
+        ct_v2: transformed 2-body integrals.
     """
 
     def __init__(self, mf, t_basis=None, e_basis=None,
@@ -376,7 +367,6 @@ class CTSD(lib.StreamObject):
 
     @property
     def t1s(self):
-        # get _t2s
         return self._t1s
 
     @t1s.setter
@@ -404,21 +394,6 @@ class CTSD(lib.StreamObject):
         t_xa = self._t1s[:, self.c_nmo:]
         self.t1 = {"xi": t_xi, "xa": t_xa}
 
-    #def update_t2_full(self):
-    #    self._t2s = np.zeros([self.e_nmo, self.e_nmo,
-    #                          self.t_nmo,
-    #                          self.t_nmo])
-    #    if self.t2["xyij"] is None or self.t2["xyab"] is None or self.t2[
-    #        "xyai"] is None:
-    #        print("Block t2 amps not initialized! Initializing it using "
-    #              "default algo mp2.")
-    #        self.init_amps(algo="mp2")
-    #    self._t2s[:, :, :self.c_nmo, :self.c_nmo] = self.t2["xyij"]
-    #    self._t2s[:, :, self.c_nmo:, self.c_nmo:] = self.t2["xyab"]
-    #    self._t2s[:, :, self.c_nmo:, :self.c_nmo] = self.t2["xyai"]
-    #    self._t2s[:, :, :self.c_nmo, self.c_nmo:] = np.transpose(
-    #        self.t2["xyai"], (0, 1, 3, 2))
-
     def init_amps(self, algo="mp2"):
         """
         Get the transformaiton amplitudes.
@@ -445,7 +420,6 @@ class CTSD(lib.StreamObject):
 
     def get_zero_amps(self):
         # for test purpose
-        #self.t1["ai"] = np.zeros([self.a_nmo, self.c_nmo])
         self.t1["xi"] = np.zeros([self.e_nmo, self.c_nmo])
         self.t1["xa"] = np.zeros([self.e_nmo, self.a_nmo])
 
@@ -455,8 +429,6 @@ class CTSD(lib.StreamObject):
                                     self.a_nmo])
         self.t2["xyai"] = np.zeros([self.e_nmo, self.e_nmo, self.a_nmo,
                                     self.c_nmo])
-        #self.t2["abij"] = np.zeros([self.a_nmo, self.a_nmo, self.c_nmo,
-        #                         self.c_nmo])
         return self.t1, self.t2
 
     def get_mp2_amps(self):
@@ -473,7 +445,6 @@ class CTSD(lib.StreamObject):
         e_ai = -(mo_e_a[:, None] - mo_e_i[None, :])
         e_xa = -(mo_e_x[:, None] - mo_e_a[None, :])
 
-        #self.t1["ai"] = fock_mn[self.c_nmo:self.t_nmo, :self.c_nmo]
         self.t1["xi"] = fock_mn[self.t_nmo:, :self.c_nmo]
         self.t1["xa"] = fock_mn[self.t_nmo:, self.c_nmo:self.t_nmo]
 
@@ -483,17 +454,12 @@ class CTSD(lib.StreamObject):
                                :self.c_nmo].copy()
         self.t2["xyai"] = self.eri[self.t_nmo:, self.t_nmo:,
                           self.c_nmo:self.t_nmo, :self.c_nmo].copy()
-        # for test
-        #self.t2["abij"] = self.eri[self.c_nmo:self.t_nmo,
-        ## self.c_nmo:self.t_nmo,#
-        #:self.c_nmo, :self.c_nmo].copy()
 
         self.t1["xi"] /= e_xi
         self.t1["xa"] /= e_xa
 
         self.t2["xyab"] /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
         self.t2["xyij"] /= lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
-        #self.t2["abij"] /= lib.direct_sum("ai+bj -> abij", e_ai, e_ai)
         self.t2["xyai"] /= lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
 
         return self.t1, self.t2
@@ -576,8 +542,6 @@ class CTSD(lib.StreamObject):
         #            self.c_nmo:self.t_nmo]
         # o_ai = o_mn[self.c_nmo:self.t_nmo:, :self.c_nmo]
 
-        # TODO: check ontribution of this commutator to integrals within the
-        #  target space is 0
         if only_target:
             return
 
@@ -655,12 +619,11 @@ class CTSD(lib.StreamObject):
             dm1 = self.dm1
         if dm2 is None:
             dm2 = self.dm2
+
         # construct Do^{p1p2e2}_{a1q2a2}
         dm2 = get_d_zero(dm1, dm2)
-        # need a slice of the full ERI
-        # TODO: sorting out which is better, using full ERI and then slicing
-        #  or sliced ERI and reconstruct. Here assume the full ERI is available
 
+        # need a slice of the full ERI
         v_mnxu = self.eri[:, :, self.t_nmo:, :]
         slices = [0, self.nmo, 0, self.nmo, self.t_nmo, self.nmo,
                   0, self.t_nmo, 0, self.nmo, 0, self.t_nmo]
@@ -742,11 +705,9 @@ class CTSD(lib.StreamObject):
                  :self.c_nmo]
         v_mijx = self.eri[:, :self.c_nmo, :self.c_nmo,
                  self.t_nmo:]
-        c1_prime_mn[:, :self.t_nmo] -= lib.einsum("mixj, xipj -> "
-                                                       "mp", v_mixj,
+        c1_prime_mn[:, :self.t_nmo] -= lib.einsum("mixj, xipj -> mp", v_mixj,
                                                   s0_xipj)
-        c1_prime_mn[:, :self.t_nmo] -= lib.einsum("mijx, xipj -> "
-                                                       "mp", v_mijx,
+        c1_prime_mn[:, :self.t_nmo] -= lib.einsum("mijx, xipj -> mp", v_mijx,
                                                   s1_xipj)
 
         # second term in equation 44
@@ -900,13 +861,13 @@ class CTSD(lib.StreamObject):
             c1 = self.ct_h1
         if c2 is None:
             c2 = self.ct_v2
+
         e_hf = 2. * lib.einsum("ii -> ", c1[:self.c_nmo, :self.c_nmo])
         e_hf += 2. * lib.einsum("ijij -> ", c2[:self.c_nmo, :self.c_nmo,
                                              :self.c_nmo, :self.c_nmo])
         e_hf -= lib.einsum("ijji -> ", c2[:self.c_nmo, :self.c_nmo,
                                             :self.c_nmo, :self.c_nmo])
         e_hf += c0
-
         e_hf += self.mf.energy_nuc()
         return e_hf
 

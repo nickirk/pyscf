@@ -1,10 +1,10 @@
 import tempfile
 import unittest
 import numpy as np
-from functools import reduce
 from pyscf import gto, scf, lib
 from pyscf import ct, mp, ao2mo
 from pyscf.ct import ctsd
+
 
 def setUpModule():
     global mol, mf, myct
@@ -30,6 +30,7 @@ def tearDownModule():
     global mol, mf, myct
     mol.stdout.close()
     del mol, mf, myct
+
 
 class KnownValues(unittest.TestCase):
 
@@ -106,7 +107,7 @@ class KnownValues(unittest.TestCase):
         # assert eri are the same
         # ct eri is in physicsts format
         ct_ovov = myct.eri[:myct.c_nmo, :myct.c_nmo, myct.c_nmo:,
-                  myct.c_nmo:].transpose((0, 2, 1, 3))
+                           myct.c_nmo:].transpose((0, 2, 1, 3))
         nocc = mymp2.nocc
         nvir = mymp2.nmo - nocc
         mp2_ovov = eris.ovov.reshape(nocc, nvir, nocc, nvir)
