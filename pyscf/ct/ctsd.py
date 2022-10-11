@@ -298,7 +298,7 @@ class CTSD(lib.StreamObject):
         fock_mn = self.mf.get_fock()
         fock_mn = self.ao2mo(fock_mn)
 
-        ct_h1 += 1/.2 * self.commute_o1_t(self.commute_o1_t(fock_mn))
+        ct_h1 += 1./2 * self.commute_o1_t(self.commute_o1_t(fock_mn))
 
 
         # final step might need to do some transformation on the eris so that
