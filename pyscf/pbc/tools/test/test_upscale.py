@@ -56,36 +56,59 @@ def tearDownModule():
     global cell
     del cell
 
+def driver(k_s, k_d, cc_dense=False):
+    """driver function for tests
+
+    Args:
+        k_s (list/tuple): list/tuple of 3 integers. Sparse k-mesh 
+        k_d (list/tuple): list/tuple of 3 integers. Dense k-mesh
+        cc_dense (bool): whether to do ccsd on dense k-mesh, too
+    """
+    kmf_s, kmp_s = set_up_method(cell, k_s)
+    kmp_s.kernel()
+
+    mycc_s = cc.KCCSD(kmf_s)
+    mycc_s.kernel()
+
+    kmf_d, kmp_d = set_up_method(cell, k_d)
+    dist_nm = get_nn_dist(kmf_s.kpts, kmf_d.kpts)
+
+    kmp_d.kernel()
+    t1_us, t2_us = upscale(mycc_s, kmp_s, kmp_d, dist_nm, 1)
+    e_corr = get_energy(t1_us, t2_us, kmf_d)
+
+    return e_corr, t1_us, t2_us
+
 class KnownValues(unittest.TestCase):
     def test_k222_K222(self):
-        nks_mf_s = [2, 2, 2]
-        kmf_s, kmp_s = set_up_method(cell, nks_mf_s)
-        e_mp2_s, t2_mp2_s = kmp_s.kernel()
+        e_us, t1_us, t2_us = driver([2, 2, 2], [2, 2, 2])
 
-        mycc_s = cc.KCCSD(kmf_s)
-        ecc_s, t1_cc_s, t2_cc_s = mycc_s.kernel()
+        kmf_d, _ = set_up_method(cell, [2, 2, 2])
+        mycc_d = cc.KCCSD(kmf_d)
+        ecc_d, t1_cc_d, t2_cc_d = mycc_d.kernel()
 
-        #for nks_mf_d in [[3, 3, 3], [4, 4, 4], [5, 5, 5], [6, 6, 6]]: 
-        for nks_mf_d in [[2, 2, 2]]: 
-            kmf_d, kmp_d = set_up_method(cell, nks_mf_d)
-            dist_nm = get_nn_dist(kmf_s.kpts, kmf_d.kpts)
+        abs_diff_sum = np.abs(t2_us) - np.abs(t2_cc_d)
+        abs_diff_sum = np.einsum("xyzijab ->", abs_diff_sum)
+        diff_sum = t2_us - t2_cc_d
+        diff_sum = np.einsum("xyzijab ->", diff_sum)
+        self.assertAlmostEqual(ecc_d, e_us, 7)
+        self.assertAlmostEqual(abs_diff_sum, 0., 12)
+        self.assertAlmostEqual(diff_sum, 0., 12)
 
-            emp2_d, t2_d = kmp_d.kernel()
+    def test_k222_K322(self):
+        e_us, t1_us, t2_us = driver([2, 2, 2], [3, 2, 2])
 
+        kmf_d, _ = set_up_method(cell, [3, 2, 2])
+        mycc_d = cc.KCCSD(kmf_d)
+        ecc_d, t1_cc_d, t2_cc_d = mycc_d.kernel()
 
-            # set up CCSD 
-            e_us = 0.
-            mycc_d = cc.KCCSD(kmf_d)
-            ecc_d, t1_cc_d, t2_cc_d = mycc_d.kernel()
-            e_us, t1_us, t2_us = upscale(t1_cc_s, t2_cc_s, t2_d, kmp_s, kmp_d, dist_nm, 1)
-            abs_diff_sum = np.abs(t2_us) - np.abs(t2_cc_d)
-            abs_diff_sum = np.einsum("xyzijab ->", abs_diff_sum)
-            diff_sum = t2_us - t2_cc_d
-            diff_sum = np.einsum("xyzijab ->", diff_sum)
-            self.assertAlmostEqual(ecc_d, e_us, 7)
-            print(nks_mf_d[0], abs_diff_sum, diff_sum)
-            self.assertAlmostEqual(abs_diff_sum, 0., 12)
-            self.assertAlmostEqual(diff_sum, 0., 12)
+        abs_diff_sum = np.abs(t2_us) - np.abs(t2_cc_d)
+        abs_diff_sum = np.einsum("xyzijab ->", abs_diff_sum)
+        diff_sum = t2_us - t2_cc_d
+        diff_sum = np.einsum("xyzijab ->", diff_sum)
+        self.assertAlmostEqual(ecc_d, e_us, 7)
+        self.assertAlmostEqual(abs_diff_sum, 0., 12)
+        self.assertAlmostEqual(diff_sum, 0., 12)
 
 if __name__ == '__main__':
     print("Full test of upscale")

@@ -57,23 +57,30 @@ def set_up_method(cell, k_mesh):
 
     return kmf, kmp
 
-def upscale(t1, t2, t2_cc_d, kmp_s, kmp_d, nn_table, n_shell=1):
+def upscale(kcc_s, kmp_s, kmp_d, nn_table, n_shell=1, **kwargs):
     """
     Args:
-        t1: np array of size [nkpts_s, nocc, nvir]
-        t2: np array of size [nkpts_s, nkpts_s, nkpts_s, nocc, nocc, nvir, nvir]
-        kmp_s: mp2 object on a sparse k-mesh
-        kmp_s: mp2 object on a dense k-mesh
+        kcc_s (CCSD object): defined on a sparse k-mesh. Its t1 and t2 will be upscaled.
+        kmp_s (MP2 object): defined on a sparse k-mesh.
+        kmp_s (MP2 object): defined on a dense k-mesh.
         nn_table: 2D np array. [nkpts_d, nkpts_s],
                   number of dense k-points x number of sparse k-points
-        n_shell: integer. Determine how far should it neighbours go.
+        n_shell: integer. Determine how far should its neighbours go.
+    
+    kwargs:
+        t1_phase (np array): dtyep=complex128. Provide the phase structure for the upscaled t1, 
+            should have the same size as t1.
+        t2_phase (np array): dtyep=complex128. Provide the phase structure for the upscaled t2, 
+            should have the same size as t2.
 
     Returns:
-        t2_d: The upscaled T2 amplitudes. The same size as t2_d
+        t1_us: The upscaled T1 amplitudes. [nkpts_d, nocc, nvir]
+        t2_us: The upscaled T2 amplitudes. The same size as kmp_d.t2
     """
     # loop over each k-point in k_d
 
-    kconserv_s = kmp_s.khelper.kconserv
+    log = logger.Logger(kmp_d.stdout, kmp_d.verbose)
+    cput0 = (logger.process_clock(), logger.perf_counter())
     kconserv_d = kmp_d.khelper.kconserv
 
     nkpts_d = len(kmp_d.kpts)
@@ -103,17 +110,18 @@ def upscale(t1, t2, t2_cc_d, kmp_s, kmp_d, nn_table, n_shell=1):
         raise MemoryError('Insufficient memory! MP2 memory usage %d MB (currently available %d MB)'
                           % (mem_usage, mem_avail))
 
-    t1_d = np.zeros((nkpts_d, nocc, nvir),
+    t1_us = np.zeros((nkpts_d, nocc, nvir),
                     dtype=kmp_s.t2.dtype)
-    t2_d = np.zeros((nkpts_d, nkpts_d, nkpts_d, nocc, nocc, nvir, nvir),
+    t2_us = np.zeros((nkpts_d, nkpts_d, nkpts_d, nocc, nocc, nvir, nvir),
                     dtype=kmp_s.t2.dtype)
 
-    # Build 3-index DF tensor Lov
-    if with_df_ints:
-        Lov = kmp2._init_mp_df_eris(kmp_d)
+    if "t1_phase" in kwargs.keys():
+        t1_phase = kwargs["t1_phase"]
 
-    oovv_ij = np.zeros((nkpts_d,nocc,nocc,nvir,nvir), dtype=kmp_d.mo_coeff[0].dtype)
-    emp2_us = 0.
+    if "t2_phase" in kwargs.keys():
+        t2_phase = kwargs["t2_phase"]
+    else:
+        t2_phase = kmp_d.t2/np.abs(kmp_d.t2) 
 
     #for ki in range(nkpts_d):
     #    ki_nn = nn_table[ki, :].argsort()[:n_shell]
@@ -121,69 +129,99 @@ def upscale(t1, t2, t2_cc_d, kmp_s, kmp_d, nn_table, n_shell=1):
     #    for ki_s in ki_nn:
     #        weight = get_singles_denom(kmp_d, ki) / get_singles_denom(kmp_s, ki_s)
     #        weight = np.abs(weight)
-    #        t1_d[ki] += t1[ki_s] * weight
+    #        t1_us[ki] += kcc_s.t1[ki_s] * weight
     #        tot_weight += weight
 
     #    if tot_weight.all() != 0.:
-    #        t1_d[ki] /= tot_weight
-    #        t1_d[ki] *= np.sqrt(nkpts_s / nkpts_d)
+    #        t1_us[ki] /= tot_weight
+    #        t1_us[ki] *= np.sqrt(nkpts_s / nkpts_d)
     #        #t1_d[ki] *= np.sign(t1[ki])
 
     for ki in range(nkpts_d):
-        print("ki =", ki, ", nkpts = ", nkpts_d)
+        log.info("Finished %d of total %d kpts ", ki+1, nkpts_d)
         ki_nn = nn_table[ki, :].argsort()[:n_shell]
         for kj in range(nkpts_d):
             kj_nn = nn_table[kj, :].argsort()[:n_shell]
             for ka in range(nkpts_d):
                 kb = kconserv_d[ki,ka,kj]
-
-                if with_df_ints:
-                    oovv_ij[ka] = (1./nkpts_d) * lib.einsum("Lia,Ljb->iajb", Lov[ki, ka], Lov[kj, kb]).transpose(0,2,1,3)
-                else:
-                    orbo_i = kmp_d.mo_coeff[ki][:,:nocc]
-                    orbo_j = kmp_d.mo_coeff[kj][:,:nocc]
-                    orbv_a = kmp_d.mo_coeff[ka][:,nocc:]
-                    orbv_b = kmp_d.mo_coeff[kb][:,nocc:]
-                    oovv_ij[ka] = kmp2.fao2mo((orbo_i,orbv_a,orbo_j,orbv_b),
-                                         (kmp_d.kpts[ki],kmp_d.kpts[ka],kmp_d.kpts[kj],kmp_d.kpts[kb]),
-                                         compact=False).reshape(nocc,nvir,nocc,nvir).transpose(0,2,1,3) / nkpts_d
-
-            for ka in range(nkpts_d):
-                kb = kconserv_d[ki,ka,kj]
                 ka_nn = nn_table[ka, :].argsort()[:n_shell]
-                kb_nn = nn_table[kb, :].argsort()[:n_shell]
-                tot_weight = np.zeros([nocc, nocc, nvir, nvir])
 
                 for ki_s in ki_nn:
                     for ka_s in ka_nn:
                         for kj_s in kj_nn:
-                            #kb_s = kconserv_s[ki_s, ka_s, kj_s]
-                                
                             weight = kmp_d.t2[ki, kj, ka]/kmp_s.t2[ki_s, kj_s, ka_s]
                             weight = np.abs(weight)
-                            #t2_d[ki, kj, ka] += t2[ki_s, kj_s, ka_s] * weight
-                            t2_d[ki, kj, ka] += np.abs(t2[ki_s, kj_s, ka_s]) * weight
-                            #t2_d[ki, kj, ka] *= np.exp(np.angle(t2_cc_d[ki, kj, ka]*1j))
-                            t2_d[ki, kj, ka] *= np.exp(np.angle(kmp_d.t2[ki, kj, ka])*1j)
-                            #t2_d[ki, kj, ka] *= np.sign(kmp_d.t2[ki, kj, ka])
-                            #tot_weight += weight
-                #if tot_weight.all() != 0.:
-                #    t2_d[ki, kj, ka] /= tot_weight
-                #    t2_d[ki, kj, ka] *= nkpts_s / nkpts_d
-                    
-                #else:
-                #    raise RuntimeWarning("Total weight cannot be 0!")
+                            t2_us[ki, kj, ka] += np.abs(kcc_s.t2[ki_s, kj_s, ka_s]) * weight
+                            t2_us[ki, kj, ka] *= t2_phase[ki, kj, ka]
                 
+
+
+    log.timer("upscale", *cput0)
+
+    return t1_us, t2_us
+
+
+def get_energy(t1, t2, kmf):
+    """calculate correlation energy based on provided t1 and t2 amplitudes, kmf provides 
+
+    Args:
+        t1 (np array): size [nkpts, nocc, nvir]
+        t2 (np array): size [nkpts, nkpts, nkpts, nocc, nocc, nvir, nvir]
+        kmf (scf object): mean-field object to provide eri or df for contraction with t1 and t2 or construct 
+            Coulomb integrals
+    Returns:
+        e_corr (float): correlation energy
+    """
+
+    # need kmp2 object for DF
+    mykmp2 = mp.KMP2(kmf)
+    nmo = mykmp2.nmo
+    nocc = mykmp2.nocc
+    nvir = nmo - nocc
+    nkpts = mykmp2.nkpts
+
+    with_df_ints = isinstance(kmf.with_df, df.GDF)
+
+    mem_avail = mykmp2.max_memory - lib.current_memory()[0]
+    mem_usage = (nkpts * (nocc * nvir)**2) * 16 / 1e6
+    if with_df_ints:
+        mydf = kmf.with_df
+        if mydf.auxcell is None:
+            # Calculate naux based on precomputed GDF integrals
+            naux = mydf.get_naoaux()
+        else:
+            naux = mydf.auxcell.nao_nr()
+
+    # Build 3-index DF tensor Lov
+    if with_df_ints:
+        Lov = kmp2._init_mp_df_eris(mykmp2)
+
+    oovv_ij = np.zeros((nkpts,nocc,nocc,nvir,nvir), dtype=kmf.mo_coeff[0].dtype)
+    e_corr = 0.
+    for ki in range(nkpts):
+        for kj in range(nkpts):
+            for ka in range(nkpts):
+                kb = mykmp2.khelper.kconserv[ki,ka,kj]
+
+                if with_df_ints:
+                    oovv_ij[ka] = (1./nkpts) * lib.einsum("Lia,Ljb->iajb", Lov[ki, ka], Lov[kj, kb]).transpose(0,2,1,3)
+                else:
+                    orbo_i = mykmp2.mo_coeff[ki][:,:nocc]
+                    orbo_j = mykmp2.mo_coeff[kj][:,:nocc]
+                    orbv_a = mykmp2.mo_coeff[ka][:,nocc:]
+                    orbv_b = mykmp2.mo_coeff[kb][:,nocc:]
+                    oovv_ij[ka] = kmp2.fao2mo((orbo_i,orbv_a,orbo_j,orbv_b),
+                                         (mykmp2.kpts[ki],mykmp2.kpts[ka],mykmp2.kpts[kj],mykmp2.kpts[kb]),
+                                         compact=False).reshape(nocc,nvir,nocc,nvir).transpose(0,2,1,3) / nkpts
+            for ka in range(nkpts):
+                kb = mykmp2.khelper.kconserv[ki,ka,kj]
                 woovv = 2 * oovv_ij[ka] - oovv_ij[kb].transpose(0, 1, 3, 2)
-                t2_tmp = lib.einsum("ia, jb-> ijab", t1_d[ki], t1_d[kj])
-                t2_tmp += t2_d[ki, kj, ka]
-                emp2_us += lib.einsum("ijab, ijab", t2_tmp, woovv).real
+                t2_tmp = lib.einsum("ia, jb-> ijab", t1[ki], t1[kj])
+                t2_tmp += t2[ki, kj, ka]
+                e_corr += lib.einsum("ijab, ijab", t2_tmp, woovv).real
+    e_corr /= nkpts
 
-
-
-    emp2_us /= nkpts_d
-
-    return emp2_us, t1_d, t2_d
+    return e_corr
 
 def get_singles_denom(kmp, ki):
     """
@@ -297,10 +335,10 @@ if __name__ == '__main__':
 
     # need a function to set up the systems.
     #nks_mf_s = [3, 3, 3]
-    nks_mf_s = [3, 3, 3]
+    nks_mf_s = [2, 2, 2]
     kmf_s, kmp_s = set_up_method(cell, nks_mf_s)
 
-    nks_mf_d = [3, 3, 3]
+    nks_mf_d = [2, 2, 2]
     #nks_mf_d = [3, 3, 3]
     kmf_d, kmp_d = set_up_method(cell, nks_mf_d)
 
@@ -311,12 +349,6 @@ if __name__ == '__main__':
     emp2_s, t2_s = kmp_s.kernel()
     emp2_d, t2_d = kmp_d.kernel()
 
-    #emp2_us, t2_us = upscale(t2_s, kmp_s, kmp_d, dist_nm, 1)
-    #abs_diff = np.abs(t2_d) - np.abs(t2_us)
-    #diff_norm = np.linalg.norm(abs_diff)
-    #diff_e = emp2_us - emp2_d
-    #print("Upscaled MP2 e = ", emp2_us)
-
 
     # set up CCSD 
     e_us = 0.
@@ -326,7 +358,8 @@ if __name__ == '__main__':
     mycc_d = cc.KCCSD(kmf_d)
     mycc_d.max_cycle = 50
     ecc, t1_cc_d, t2_cc_d = mycc_d.kernel()
-    e_us, t1_us, t2_us = upscale(t1_cc_s, t2_cc_s, t2_cc_d, kmp_s, kmp_d, dist_nm, 1)
+    t1_us, t2_us = upscale(mycc, kmp_s, kmp_d, dist_nm, 1)
+    e_us = get_energy(t1_us, t2_us, kmf_d)
     abs_diff_sum = np.abs(t2_us) - np.abs(t2_cc_d)
     abs_diff_sum = np.einsum("xyzijab ->", abs_diff_sum)
     diff_sum = t2_us - t2_cc_d
@@ -334,4 +367,3 @@ if __name__ == '__main__':
     print("t2 abs_diff_sum = ", abs_diff_sum)
     print("t2 diff_sum = ", diff_sum)
     print(e_us, emp2_s, emp2_d, ecc)
-
