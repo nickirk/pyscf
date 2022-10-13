@@ -57,7 +57,7 @@ def set_up_method(cell, k_mesh):
 
     return kmf, kmp
 
-def upscale(t1, t2, kmp_s, kmp_d, nn_table, n_shell=1):
+def upscale(t1, t2, t2_cc_d, kmp_s, kmp_d, nn_table, n_shell=1):
     """
     Args:
         t1: np array of size [nkpts_s, nocc, nvir]
@@ -115,19 +115,19 @@ def upscale(t1, t2, kmp_s, kmp_d, nn_table, n_shell=1):
     oovv_ij = np.zeros((nkpts_d,nocc,nocc,nvir,nvir), dtype=kmp_d.mo_coeff[0].dtype)
     emp2_us = 0.
 
-    for ki in range(nkpts_d):
-        ki_nn = nn_table[ki, :].argsort()[:n_shell]
-        tot_weight = np.zeros([nocc, nvir])
-        for ki_s in ki_nn:
-            weight = get_singles_denom(kmp_d, ki) / get_singles_denom(kmp_s, ki_s)
-            weight = np.abs(weight)
-            t1_d[ki] += t1[ki_s] * weight
-            tot_weight += weight
+    #for ki in range(nkpts_d):
+    #    ki_nn = nn_table[ki, :].argsort()[:n_shell]
+    #    tot_weight = np.zeros([nocc, nvir])
+    #    for ki_s in ki_nn:
+    #        weight = get_singles_denom(kmp_d, ki) / get_singles_denom(kmp_s, ki_s)
+    #        weight = np.abs(weight)
+    #        t1_d[ki] += t1[ki_s] * weight
+    #        tot_weight += weight
 
-        if tot_weight.all() != 0.:
-            t1_d[ki] /= tot_weight
-            t1_d[ki] *= nkpts_s / nkpts_d
-            #t1_d[ki] *= np.sign(t1[ki])
+    #    if tot_weight.all() != 0.:
+    #        t1_d[ki] /= tot_weight
+    #        t1_d[ki] *= np.sqrt(nkpts_s / nkpts_d)
+    #        #t1_d[ki] *= np.sign(t1[ki])
 
     for ki in range(nkpts_d):
         print("ki =", ki, ", nkpts = ", nkpts_d)
@@ -159,21 +159,20 @@ def upscale(t1, t2, kmp_s, kmp_d, nn_table, n_shell=1):
                         for kj_s in kj_nn:
                             #kb_s = kconserv_s[ki_s, ka_s, kj_s]
                                 
-                            #if kb_s in kb_nn:
-                            #weight = get_doubles_denom(kmp_s, [ki_s, kj_s, ka_s, kb_s])
-                            #weight /= get_doubles_denom(kmp_d, [ki, kj, ka, kb])
                             weight = kmp_d.t2[ki, kj, ka]/kmp_s.t2[ki_s, kj_s, ka_s]
                             weight = np.abs(weight)
                             #t2_d[ki, kj, ka] += t2[ki_s, kj_s, ka_s] * weight
                             t2_d[ki, kj, ka] += np.abs(t2[ki_s, kj_s, ka_s]) * weight
-                            tot_weight += weight
-                if tot_weight.all() != 0.:
-                    t2_d[ki, kj, ka] /= tot_weight
-                    t2_d[ki, kj, ka] *= nkpts_s / nkpts_d
-                    t2_d[ki, kj, ka] *= np.sign(kmp_d.t2[ki, kj, ka])
+                            #t2_d[ki, kj, ka] *= np.exp(np.angle(t2_cc_d[ki, kj, ka]*1j))
+                            t2_d[ki, kj, ka] *= np.exp(np.angle(kmp_d.t2[ki, kj, ka])*1j)
+                            #t2_d[ki, kj, ka] *= np.sign(kmp_d.t2[ki, kj, ka])
+                            #tot_weight += weight
+                #if tot_weight.all() != 0.:
+                #    t2_d[ki, kj, ka] /= tot_weight
+                #    t2_d[ki, kj, ka] *= nkpts_s / nkpts_d
                     
-                else:
-                    raise RuntimeWarning("Total weight cannot be 0!")
+                #else:
+                #    raise RuntimeWarning("Total weight cannot be 0!")
                 
                 woovv = 2 * oovv_ij[ka] - oovv_ij[kb].transpose(0, 1, 3, 2)
                 t2_tmp = lib.einsum("ia, jb-> ijab", t1_d[ki], t1_d[kj])
@@ -201,15 +200,15 @@ def get_singles_denom(kmp, ki):
     nvir = kmp.nmo - kmp.nocc
     
 
-    mo_e_o = kmp.mo_energy[ki][:nocc]
-    mo_e_v = kmp.mo_energy[ki][nocc:]
+    mo_e_o = [kmp.mo_energy[ki][:nocc]]
+    mo_e_v = [kmp.mo_energy[ki][nocc:]]
 
     # Get location of non-zero/padded elements in occupied and virtual space
     nonzero_opadding, nonzero_vpadding = padding_k_idx(kmp, kind="split")
     # Remove zero/padded elements from denominator
     eia = LARGE_DENOM * np.ones((nocc, nvir), dtype=kmp.mo_energy[0].dtype)
     n0_ovp_ia = np.ix_(nonzero_opadding[ki], nonzero_vpadding[ki])
-    eia[n0_ovp_ia] = (mo_e_o[:,None] - mo_e_v)[n0_ovp_ia]
+    eia[n0_ovp_ia] = (mo_e_o[0][:,None] - mo_e_v[0])[n0_ovp_ia]
 
     return eia
 
@@ -281,7 +280,7 @@ if __name__ == '__main__':
     '''
     cell = gto.Cell()
     cell.pseudo = 'gth-pade'
-    cell.basis = 'gth-dzv'
+    cell.basis = 'sto6g'
     cell.ke_cutoff = 50
     cell.atom='''
         H 2.00   2.00   1.20
@@ -297,10 +296,12 @@ if __name__ == '__main__':
     cell.build()
 
     # need a function to set up the systems.
-    nks_mf_s = [2, 2, 3]
+    #nks_mf_s = [3, 3, 3]
+    nks_mf_s = [3, 3, 3]
     kmf_s, kmp_s = set_up_method(cell, nks_mf_s)
 
-    nks_mf_d = [2, 2, 3]
+    nks_mf_d = [3, 3, 3]
+    #nks_mf_d = [3, 3, 3]
     kmf_d, kmp_d = set_up_method(cell, nks_mf_d)
 
     #ehf_s = kmf_s.kernel()
@@ -320,7 +321,17 @@ if __name__ == '__main__':
     # set up CCSD 
     e_us = 0.
     mycc = cc.KCCSD(kmf_s)
-    ecc, t1, t2 = mycc.kernel()
-    e_us, t1_us, t2_us = upscale(t1, t2, kmp_s, kmp_d, dist_nm, 1)
-    print(e_us, emp2_s, emp2_d)
+    mycc.max_cycle = 50
+    ecc, t1_cc_s, t2_cc_s = mycc.kernel()
+    mycc_d = cc.KCCSD(kmf_d)
+    mycc_d.max_cycle = 50
+    ecc, t1_cc_d, t2_cc_d = mycc_d.kernel()
+    e_us, t1_us, t2_us = upscale(t1_cc_s, t2_cc_s, t2_cc_d, kmp_s, kmp_d, dist_nm, 1)
+    abs_diff_sum = np.abs(t2_us) - np.abs(t2_cc_d)
+    abs_diff_sum = np.einsum("xyzijab ->", abs_diff_sum)
+    diff_sum = t2_us - t2_cc_d
+    diff_sum = np.einsum("xyzijab ->", diff_sum)
+    print("t2 abs_diff_sum = ", abs_diff_sum)
+    print("t2 diff_sum = ", diff_sum)
+    print(e_us, emp2_s, emp2_d, ecc)
 
