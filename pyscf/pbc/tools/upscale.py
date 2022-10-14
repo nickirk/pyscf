@@ -143,7 +143,6 @@ def upscale(kcc_s, kmp_s, kmp_d, nn_table, n_shell=1, **kwargs):
         for kj in range(nkpts_d):
             kj_nn = nn_table[kj, :].argsort()[:n_shell]
             for ka in range(nkpts_d):
-                kb = kconserv_d[ki,ka,kj]
                 ka_nn = nn_table[ka, :].argsort()[:n_shell]
 
                 for ki_s in ki_nn:
@@ -216,7 +215,8 @@ def get_energy(t1, t2, kmf):
             for ka in range(nkpts):
                 kb = mykmp2.khelper.kconserv[ki,ka,kj]
                 woovv = 2 * oovv_ij[ka] - oovv_ij[kb].transpose(0, 1, 3, 2)
-                t2_tmp = lib.einsum("ia, jb-> ijab", t1[ki], t1[kj])
+                t2_tmp = np.zeros((nocc, nocc, nvir, nvir), dtype=t2[0,0,0,0].dtype)
+                t2_tmp = lib.einsum("ia, jb-> ijab", t1[ka], t1[ka])
                 t2_tmp += t2[ki, kj, ka]
                 e_corr += lib.einsum("ijab, ijab", t2_tmp, woovv).real
     e_corr /= nkpts
@@ -335,10 +335,10 @@ if __name__ == '__main__':
 
     # need a function to set up the systems.
     #nks_mf_s = [3, 3, 3]
-    nks_mf_s = [2, 2, 2]
+    nks_mf_s = [1, 1, 2]
     kmf_s, kmp_s = set_up_method(cell, nks_mf_s)
 
-    nks_mf_d = [2, 2, 2]
+    nks_mf_d = [1, 1, 4]
     #nks_mf_d = [3, 3, 3]
     kmf_d, kmp_d = set_up_method(cell, nks_mf_d)
 
@@ -356,14 +356,16 @@ if __name__ == '__main__':
     mycc.max_cycle = 50
     ecc, t1_cc_s, t2_cc_s = mycc.kernel()
     mycc_d = cc.KCCSD(kmf_d)
+    mycc_d.max_cycle = 0
+    ecc, t1_mp2_d, t2_mp2_d = mycc_d.kernel()
     mycc_d.max_cycle = 50
     ecc, t1_cc_d, t2_cc_d = mycc_d.kernel()
-    t1_us, t2_us = upscale(mycc, kmp_s, kmp_d, dist_nm, 1)
-    e_us = get_energy(t1_us, t2_us, kmf_d)
-    abs_diff_sum = np.abs(t2_us) - np.abs(t2_cc_d)
-    abs_diff_sum = np.einsum("xyzijab ->", abs_diff_sum)
-    diff_sum = t2_us - t2_cc_d
-    diff_sum = np.einsum("xyzijab ->", diff_sum)
-    print("t2 abs_diff_sum = ", abs_diff_sum)
-    print("t2 diff_sum = ", diff_sum)
+    t1_us, t2_us = upscale(mycc, kmp_s, kmp_d, dist_nm, 1, t2_phase=t2_cc_d/np.abs(t2_cc_d))
+    e_us = get_energy(t1_cc_d, t2_us, kmf_d)
+    abs_diff_abs_sum = np.abs(t2_us) - np.abs(t2_cc_d)
+    abs_diff_abs_sum = np.einsum("xyzijab ->", np.abs(abs_diff_abs_sum))
+    diff_abs_sum = t2_us - t2_cc_d
+    diff_abs_sum = np.einsum("xyzijab ->", np.abs(diff_abs_sum))
+    print("t2 abs_diff_sum = ", abs_diff_abs_sum)
+    print("t2 diff_sum = ", diff_abs_sum)
     print(e_us, emp2_s, emp2_d, ecc)
