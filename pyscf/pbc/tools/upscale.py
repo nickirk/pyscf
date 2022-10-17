@@ -218,7 +218,7 @@ def get_energy(t1, t2, kmf):
                 t2_tmp = np.zeros((nocc, nocc, nvir, nvir), dtype=t2[0,0,0,0].dtype)
                 t2_tmp = lib.einsum("ia, jb-> ijab", t1[ka], t1[ka])
                 t2_tmp += t2[ki, kj, ka]
-                e_corr += lib.einsum("ijab, ijab", t2_tmp, woovv).real
+                e_corr += lib.einsum("ijab, ijab", t2_tmp.conj(), woovv).real
     e_corr /= nkpts
 
     return e_corr
@@ -307,6 +307,61 @@ def get_nn_dist(kpts_s, kpts_d, n_shell=1):
     dist_ds = np.sqrt(lib.einsum("nmi, nmi -> nm", dist_ds, dist_ds))
 
     return dist_ds
+
+def coarse_grain(mp_d, mp_s, ns=3):
+    kpts_d = mp_d.kpts[::ns]
+    kpts_s = mp_s.kpts
+    assert np.allclose(kpts_d, kpts_s)
+    nkpts_s = mp_s.nkpts
+    nmo = mp_d.nmo
+    nocc = mp_d.nocc
+    nvir = nmo - nocc
+
+    mp_s.mo_energy = mp_d.mo_energy[::ns]
+    mp_s.mo_coeff = mp_d.mo_coeff[::ns]
+
+
+    with_df_ints = isinstance(mp_d._scf.with_df, df.GDF)
+
+    if with_df_ints:
+        mydf = mp_d._scf.with_df
+        if mydf.auxcell is None:
+            # Calculate naux based on precomputed GDF integrals
+            naux = mydf.get_naoaux()
+        else:
+            naux = mydf.auxcell.nao_nr()
+
+    # Build 3-index DF tensor Lov
+    if with_df_ints:
+        Lov = kmp2._init_mp_df_eris(mp_d)[::ns, ::ns]
+
+    t2 = np.zeros((nkpts_s, nkpts_s, nkpts_s,nocc,nocc,nvir,nvir), dtype=mp_d.mo_coeff[0].dtype)
+    oovv_ij = np.zeros((nkpts_s,nocc,nocc,nvir,nvir), dtype=mp_d.mo_coeff[0].dtype)
+    e_corr = 0.
+    for ki in range(nkpts_s):
+        for kj in range(nkpts_s):
+            for ka in range(nkpts_s):
+                kb = mp_s.khelper.kconserv[ki,ka,kj]
+
+                if with_df_ints:
+                    oovv_ij[ka] = (1./nkpts_s) * lib.einsum("Lia,Ljb->iajb", Lov[ki, ka], Lov[kj, kb]).transpose(0,2,1,3)
+                else:
+                    orbo_i = mp_s.mo_coeff[ki][:,:nocc]
+                    orbo_j = mp_s.mo_coeff[kj][:,:nocc]
+                    orbv_a = mp_s.mo_coeff[ka][:,nocc:]
+                    orbv_b = mp_s.mo_coeff[kb][:,nocc:]
+                    oovv_ij[ka] = kmp2.fao2mo((orbo_i,orbv_a,orbo_j,orbv_b),
+                                         (mp_s.kpts[ki],mp_s.kpts[ka],mp_s.kpts[kj],mp_s.kpts[kb]),
+                                         compact=False).reshape(nocc,nvir,nocc,nvir).transpose(0,2,1,3) / nkpts_s
+            for ka in range(nkpts_s):
+                kb = mp_s.khelper.kconserv[ki,ka,kj]
+                eijab = get_doubles_denom(mp_s, [ki, kj, ka, kb])
+                t2_ijab = np.conj(oovv_ij[ka]/eijab)
+                woovv = 2 * oovv_ij[ka] - oovv_ij[kb].transpose(0, 1, 3, 2)
+                t2[ki, kj, ka] = t2_ijab
+                e_corr += lib.einsum("ijab, ijab", t2_ijab, woovv).real
+    e_corr /= nkpts_s
+    return e_corr, t2
 
 
 if __name__ == '__main__':
