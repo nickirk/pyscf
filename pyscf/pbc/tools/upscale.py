@@ -57,6 +57,53 @@ def set_up_method(cell, k_mesh):
 
     return kmf, kmp
 
+def get_approx_singles(kmp_d, t2):
+    """Approximate t1 based on the upscaled t2 amplitudes.
+
+    Args:
+        kmp_d (KMP2 object): MP2 object defined on the dense k-mesh.
+        t2 (np ndarray): T2 amplitudes (the upscaled or any other T2 amplitudes) defined on the dense k-mesh.
+
+    Returns:
+        t1: The approximated T1 amplitudes.
+    """
+    nocc = kmp_d.nocc
+    nvir = kmp_d.nmo - nocc
+    nkpts = kmp_d.nkpts
+
+    kconserv = kmp_d.khelper.kconserv
+
+    t1 = np.zeros([nkpts, nocc, nvir], dtype=t2.dtype)
+
+    ooov_ij = np.array([nkpts, nocc, nocc, nocc, nvir])
+    # need V_ooov for the first step approximation.
+    if kmp_d.with_df_ints:
+        Loo = _init_upscale_df_eris(kmp_d)
+        Lov = kmp2._init_mp_df_eris(kmp_d)
+    else:
+        raise NotImplementedError    
+
+    for ki in range(nkpts):
+        for kj in range(nkpts):
+            for kk in range(nkpts):
+                ka = kconserv(ki, kk, kj)
+                ooov_ij[ka] = (1./nkpts) * lib.einsum("Lij,Lka->ijka", Loo[ki, kj], Lov[kk, ka]).transpose(0,2,1,3)
+    
+            for ka in range(nkpts):
+                ke = kconserv[ki, ka, kj]
+                t1[ka] += lib.einsum("klic, ackl -> ai", ooov_ij[ke], t2[ki, kj, ke])
+
+    for ka in range(nkpts):
+        ki = ka
+        for km in range(nkpts):
+            for kn in range(nkpts):
+                ke = kconserv[km, ki, kn]
+                #t1new[ka] += -0.5 * einsum('imef,maef->ia', t2[ki, km, ke], eris.ovvv[km, ka, ke])
+                # FIXME: the ooov_ij need transpose and verification
+                t1[ka] += -0.5 * lib.einsum('mnae,nmei->ia', t2[km, kn, ka], ooov_ij[kn, km, ke])
+
+    return t1
+
 def upscale(kcc_s, kmp_s, kmp_d, nn_table, n_shell=1, **kwargs):
     """
     Args:
@@ -123,14 +170,14 @@ def upscale(kcc_s, kmp_s, kmp_d, nn_table, n_shell=1, **kwargs):
     else:
         t2_phase = kmp_d.t2/np.abs(kmp_d.t2) 
 
-    #for ki in range(nkpts_d):
-    #    ki_nn = nn_table[ki, :].argsort()[:n_shell]
-    #    tot_weight = np.zeros([nocc, nvir])
-    #    for ki_s in ki_nn:
-    #        weight = get_singles_denom(kmp_d, ki) / get_singles_denom(kmp_s, ki_s)
-    #        weight = np.abs(weight)
-    #        t1_us[ki] += kcc_s.t1[ki_s] * weight
-    #        tot_weight += weight
+    for ki in range(nkpts_d):
+        ki_nn = nn_table[ki, :].argsort()[:n_shell]
+        #tot_weight = np.zeros([nocc, nvir])
+        for ki_s in ki_nn:
+            weight = get_singles_denom(kmp_d, ki) / get_singles_denom(kmp_s, ki_s)
+            weight = np.abs(weight)
+            t1_us[ki] += kcc_s.t1[ki_s] * weight
+            #tot_weight += weight
 
     #    if tot_weight.all() != 0.:
     #        t1_us[ki] /= tot_weight
@@ -363,6 +410,78 @@ def coarse_grain(mp_d, mp_s, ns=3):
     e_corr /= nkpts_s
     return e_corr, t2
 
+def _init_upscale_df_eris(mp):
+    """Compute 3-center electron repulsion integrals, i.e. (L|oo),
+    where `L` denotes DF auxiliary basis functions and `o` and `v` occupied and virtual
+    canonical crystalline orbitals. Note that `o` and `v` contain kpt indices `ko` and `kv`,
+    and the third kpt index `kL` is determined by the conservation of momentum.
+
+    Arguments:
+        mp (KMP2) -- A KMP2 instance
+
+    Returns:
+        Lov (numpy.ndarray) -- 3-center DF ints, with shape (nkpts, nkpts, naux, nocc, nvir)
+    """
+    from pyscf.ao2mo import _ao2mo
+    from pyscf.pbc.lib.kpts_helper import gamma_point
+
+    log = logger.Logger(mp.stdout, mp.verbose)
+
+    if mp._scf.with_df._cderi is None:
+        mp._scf.with_df.build()
+
+    cell = mp._scf.cell
+    if cell.dimension == 2:
+        # 2D ERIs are not positive definite. The 3-index tensors are stored in
+        # two part. One corresponds to the positive part and one corresponds
+        # to the negative part. The negative part is not considered in the
+        # DF-driven CCSD implementation.
+        raise NotImplementedError
+
+    nocc = mp.nocc
+    nmo = mp.nmo
+    nao = cell.nao_nr()
+
+    mo_coeff = _add_padding(mp, mp.mo_coeff, mp.mo_energy)[0]
+    kpts = mp.kpts
+    nkpts = len(kpts)
+    if gamma_point(kpts):
+        dtype = np.double
+    else:
+        dtype = np.complex128
+    dtype = np.result_type(dtype, *mo_coeff)
+    Loo = np.empty((nkpts, nkpts), dtype=object)
+
+    cput0 = (logger.process_clock(), logger.perf_counter())
+
+    bra_start = 0
+    bra_end = nocc
+    ket_start = nmo
+    ket_end = ket_start + nocc
+    with df.CDERIArray(mp._scf.with_df._cderi) as cderi_array:
+        tao = []
+        ao_loc = None
+        for ki in range(nkpts):
+            for kj in range(nkpts):
+                Lpq_ao = cderi_array[ki,kj]
+
+                mo = np.hstack((mo_coeff[ki], mo_coeff[kj]))
+                mo = np.asarray(mo, dtype=dtype, order='F')
+                if dtype == np.double:
+                    out = _ao2mo.nr_e2(Lpq_ao, mo, (bra_start, bra_end, ket_start, ket_end), aosym='s2')
+                else:
+                    #Note: Lpq.shape[0] != naux if linear dependency is found in auxbasis
+                    if Lpq_ao[0].size != nao**2:  # aosym = 's2'
+                        Lpq_ao = lib.unpack_tril(Lpq_ao).astype(np.complex128)
+                    out = _ao2mo.r_e2(Lpq_ao, mo, (bra_start, bra_end, ket_start, ket_end), tao, ao_loc)
+                Loo[ki, kj] = out.reshape(-1, nocc, nocc)
+
+    log.timer_debug1("transforming Loo integrals", *cput0)
+
+    return Loo
+
+
+
 
 if __name__ == '__main__':
     from pyscf.pbc import gto, mp
@@ -378,6 +497,8 @@ if __name__ == '__main__':
     cell.atom='''
         H 2.00   2.00   1.20
         H 2.00   2.00   2.60
+        H 2.00   1.20   2.00
+        H 2.00   2.60   2.00
         '''
     cell.a = '''
         4.0   0.0   0.0
