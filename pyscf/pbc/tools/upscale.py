@@ -49,7 +49,7 @@ def set_up_method(cell, k_mesh):
         kmp: MP2 object
     """
     kpts = cell.make_kpts(k_mesh, with_gamma_point=True)
-    kmf = scf.KRHF(cell, kpts, exxdiv='ewald')
+    kmf = scf.KRHF(cell, kpts, exxdiv=None)
     gdf = df.GDF(cell, kpts).build()
     kmf.with_df = gdf
     kmf.kernel()
@@ -169,21 +169,9 @@ def upscale(kcc_s, kmp_s, kmp_d, nn_table, n_shell=1, **kwargs):
         t2_phase = kwargs["t2_phase"]
     else:
         t2_phase = kmp_d.t2/np.abs(kmp_d.t2) 
+        t2_phase[np.abs(t2_phase) < 1.e-10] = 0.
 
-    for ki in range(nkpts_d):
-        ki_nn = nn_table[ki, :].argsort()[:n_shell]
-        #tot_weight = np.zeros([nocc, nvir])
-        for ki_s in ki_nn:
-            weight = get_singles_denom(kmp_d, ki) / get_singles_denom(kmp_s, ki_s)
-            weight = np.abs(weight)
-            t1_us[ki] += kcc_s.t1[ki_s] * weight
-            #tot_weight += weight
-
-    #    if tot_weight.all() != 0.:
-    #        t1_us[ki] /= tot_weight
-    #        t1_us[ki] *= np.sqrt(nkpts_s / nkpts_d)
-    #        #t1_d[ki] *= np.sign(t1[ki])
-
+    t2_us = kmp_d.t2.copy()
     for ki in range(nkpts_d):
         log.info("Finished %d of total %d kpts ", ki+1, nkpts_d)
         ki_nn = nn_table[ki, :].argsort()[:n_shell]
@@ -195,11 +183,7 @@ def upscale(kcc_s, kmp_s, kmp_d, nn_table, n_shell=1, **kwargs):
                 for ki_s in ki_nn:
                     for ka_s in ka_nn:
                         for kj_s in kj_nn:
-                            weight = kmp_d.t2[ki, kj, ka]/kmp_s.t2[ki_s, kj_s, ka_s]
-                            weight = np.abs(weight)
-                            t2_us[ki, kj, ka] += np.abs(kcc_s.t2[ki_s, kj_s, ka_s]) * weight
-                            t2_us[ki, kj, ka] *= t2_phase[ki, kj, ka]
-                
+                            t2_us[ki, kj, ka] += np.abs(kcc_s.t2[ki_s, kj_s, ka_s]*kmp_s.nkpts - kmp_d.t2[ki_s, kj_s, ka_s] * kmp_d.nkpts) / kmp_d.nkpts * t2_phase[ki, kj, ka]
 
 
     log.timer("upscale", *cput0)
@@ -263,7 +247,7 @@ def get_energy(t1, t2, kmf):
                 kb = mykmp2.khelper.kconserv[ki,ka,kj]
                 woovv = 2 * oovv_ij[ka] - oovv_ij[kb].transpose(0, 1, 3, 2)
                 t2_tmp = np.zeros((nocc, nocc, nvir, nvir), dtype=t2[0,0,0,0].dtype)
-                t2_tmp = lib.einsum("ia, jb-> ijab", t1[ka], t1[ka])
+                t2_tmp = lib.einsum("ia, jb-> ijab", t1[ka], t1[kb])
                 t2_tmp += t2[ki, kj, ka]
                 e_corr += lib.einsum("ijab, ijab", t2_tmp.conj(), woovv).real
     e_corr /= nkpts
