@@ -49,7 +49,7 @@ def set_up_method(cell, k_mesh):
         kmp: MP2 object
     """
     kpts = cell.make_kpts(k_mesh, with_gamma_point=True)
-    kmf = scf.KRHF(cell, kpts, exxdiv=None)
+    kmf = scf.KRHF(cell, kpts, exxdiv="ewald")
     gdf = df.GDF(cell, kpts).build()
     kmf.with_df = gdf
     kmf.kernel()
@@ -183,7 +183,7 @@ def upscale(kcc_s, kmp_s, kmp_d, nn_table, n_shell=1, **kwargs):
                 for ki_s in ki_nn:
                     for ka_s in ka_nn:
                         for kj_s in kj_nn:
-                            t2_us[ki, kj, ka] += np.abs(kcc_s.t2[ki_s, kj_s, ka_s]*kmp_s.nkpts - kmp_d.t2[ki_s, kj_s, ka_s] * kmp_d.nkpts) / kmp_d.nkpts * t2_phase[ki, kj, ka]
+                            t2_us[ki, kj, ka] += (np.abs(kcc_s.t2[ki_s, kj_s, ka_s]*kmp_s.nkpts) - np.abs(kmp_d.t2[ki_s, kj_s, ka_s] * kmp_d.nkpts)) / kmp_d.nkpts * t2_phase[ki, kj, ka]
 
 
     log.timer("upscale", *cput0)
