@@ -99,31 +99,27 @@ def cc_Wvvvv(t1, t2, eris, kconserv, out=None, ka=0, kb=0):
     return Wabcd
 
 def cc_Wvoov(t1, t2, eris, kconserv, out=None, ka=0, ki=0):
+    nkpts, nocc, nvir = t1.shape
     shape_Wakic = [1, nkpts, 1] + eris.voov.shape[3:]
     Wakic = _new(shape_Wakic, t1.dtype, out)
-    nkpts, nocc, nvir = t1.shape
     for kk in range(nkpts):
-        voov_k  = einsum('akdc,id->akic',eris.vovv[ka,kk,ki],t1[ki])
-        voov_k -= einsum('lkic,la->akic',eris.ooov[ka,kk,ki],t1[ka])
-        voov_k += eris.voov[ka,kk,ki]
+        voov_i  = einsum('akdc,id->akic',eris.vovv[ka,kk,ki],t1[ki])
+        voov_i -= einsum('lkic,la->akic',eris.ooov[ka,kk,ki],t1[ka])
+        voov_i += eris.voov[ka,kk,ki]
 
         kc = kconserv[ka,ki,kk]
-        # TODO: there might be room for optimization here among the following two loops, by using symmetries in V
-        for kl in range(nkpts):
-            kd = kconserv[kl, ka, ki]
-            tau = t2[ki,kl,kd].copy()
-            if ki == kd:
-                tau[kd] += 2*einsum('id,la->ilda',t1[kd],t1[ka])
-            oovv_tmp = np.array(eris.oovv[kl,kk,kd])
-            voov_k -= 0.5*einsum('lkdc,ilda->akic',oovv_tmp,tau)
 
-        for kl in range(nkpts):
-            kd = kconserv[ki, ka, kl]
-            oovv_tmp = np.array(eris.oovv[kl,kk,kd])
-            Soovv_tmp = 2*oovv_tmp - eris.oovv[kl,kk,kc].transpose(0,1,3,2)
-            voov_k += 0.5*einsum('lkdc,ilad->akic',Soovv_tmp,t2[ki,kl,ka])
+        kd = kconserv[ka,kc,kk]
+        tau = t2[:,ki,ka].copy()
+        tau[ka] += 2*einsum('id,la->liad',t1[kd],t1[ka])
+        
+        oovv_tmp = np.array(eris.oovv[kk,:,kc])
+        voov_i -= 0.5*einsum('xklcd,xliad->akic',oovv_tmp,tau)
 
-        Wakic[ka,kk,ki] = voov_k
+        Soovv_tmp = 2*oovv_tmp - eris.oovv[:,kk,kc].transpose(0,2,1,3,4)
+        voov_i[ki] += 0.5*einsum('xklcd,xilad->akic',Soovv_tmp,t2[ki,:,ka])
+
+        Wakic[ka,kk,ki] = voov_i
     return Wakic
 
 def cc_Wvovo(t1, t2, eris, kconserv, out=None, ka=0, ki=0):
@@ -139,17 +135,13 @@ def cc_Wvovo(t1, t2, eris, kconserv, out=None, ka=0, ki=0):
 
         oovvf = eris.oovv[:,kk,kc].reshape(nkpts*nocc,nocc,nvir,nvir)
         t2f   = t2[:,ki,ka].copy() #This is a tau like term
-        #for kl in range(nkpts):
-        #    kd = kconserv[kl,kc,kk]
-        #    if ki == kd and kl == ka:
-        #        t2f[kl] += 2*einsum('id,la->liad',t1[ki],t1[ka])
+
         kd = kconserv[ka,kc,kk]
         t2f[ka] += 2*einsum('id,la->liad',t1[kd],t1[ka])
         t2f = t2f.reshape(nkpts*nocc,nocc,nvir,nvir)
 
         vovo -= 0.5*einsum('lkcd,liad->akci',oovvf,t2f)
         Wakci[ka,kk,kc] = vovo
-        # =====   End of change  = ====
     return Wakci
 
 def Wooov(t1, t2, eris, kconserv, out=None):
