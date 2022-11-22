@@ -174,7 +174,9 @@ class CTSD(lib.StreamObject):
         # active orbitals are those which are fractionally or low-lying
         # virtuals, a,b,c,d...
         if a_nmo is None:
-            a_nmo = int(self.c_nmo * 1.2)
+            a_nmo = int(self.c_nmo * 1.5)
+            a_nmo = 0
+            #a_nmo = int(self.nmo-self.c_nmo)
         self.a_nmo = a_nmo
         # target orbitals are the combination of core and active orbitals, 
         # indices p,q,r,s
@@ -235,7 +237,7 @@ class CTSD(lib.StreamObject):
             ii) [[F, T]_{1,2}, T]_{1,2} as in Watson and Chan paper.
         The default will be the latter.
         4. Return an eris that is compatible with existing solvers such as
-        CCSD.
+        CCSD. TODO
 
         Args:
 
@@ -482,9 +484,13 @@ class CTSD(lib.StreamObject):
         self.t1["xi"] /= e_xi
         self.t1["xa"] /= e_xa
 
-        self.t2["xyab"] /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
+        #self.t2["xyab"] /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
         self.t2["xyij"] /= lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
-        self.t2["xyai"] /= lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
+        #self.t2["xyai"] /= lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
+        #self.t2["xyij"] *= 0.
+        self.t2["xyab"] *= 0.
+        self.t2["xyai"] *= 0.
+
 
         return self.t1, self.t2
 
@@ -627,7 +633,7 @@ class CTSD(lib.StreamObject):
                  self.c_nmo:self.t_nmo] = ovvv
 
         v2_vvev = v2[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo, self.t_nmo:,
-                     self.c_nmo:self.a_nmo]
+                     self.c_nmo:self.t_nmo]
         vvvv = 4. * lib.einsum("abxd, xc -> abcd", v2_vvev, self.t1["xa"])
         c2_prime[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo,
                  self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo] = vvvv

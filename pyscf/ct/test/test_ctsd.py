@@ -192,8 +192,22 @@ class KnownValues(unittest.TestCase):
         #mf = scf.RHF(mol).run()
         mp2_e = mp.MP2(mf).run()
         c0, c1, c2 = myct.kernel()
-        bar_hf_e = myct.get_hf_energy(c0, c1, c2)
-        print("CT HF energy = ", bar_hf_e)
+        ct_hf_e = myct.get_hf_energy(c0, c1, c2)
+        print("CT HF energy = ", ct_hf_e)
+
+        ct_mo_energy = myct.get_mo_energy()
+        e_ia = -(ct_mo_energy[myct.c_nmo:myct.t_nmo, None] \
+                - ct_mo_energy[None, :myct.c_nmo])
+        ct_vvoo = c2[myct.c_nmo:myct.t_nmo, myct.c_nmo:myct.t_nmo, 
+                     :myct.c_nmo, :myct.c_nmo]
+        ct_oovv = c2[:myct.c_nmo, :myct.c_nmo, 
+                     myct.c_nmo:myct.t_nmo, myct.c_nmo:myct.t_nmo]
+        ct_t2 = ct_vvoo / lib.direct_sum("ai+bj -> abij", e_ia, e_ia)
+        ct_mp2_e = 2. * lib.einsum("abij, ijab -> ", ct_t2, ct_oovv)
+        ct_mp2_e -= lib.einsum("abij, jiab -> ", ct_t2, ct_oovv)
+        ct_mp2_total = ct_hf_e + ct_mp2_e
+        print("CT MP2 corr = ", ct_mp2_e)
+        print("CT MP2 total = ", ct_mp2_total)
 
 
 
