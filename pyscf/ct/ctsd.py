@@ -241,16 +241,21 @@ class CTSD(lib.StreamObject):
 
 
         Returns:
-            ct_eris: class. modified ERI
+            ct_0: constant term in \bar{H}, float
+            ct_h1: singles term in \bar{H}, ndarray
+            ct_v2: doubles term in \bar{H}, ndarray
         """
 
         if self.eri is None:
             self.eri = self.ao2mo()
 
         # initialize the amplitudes
-        if self.t1 is None or self.t2 is None:
+        if "amps_algo" in kwargs:
+            self.amps_algo = kwargs["amps_algo"]
+        else:
             self.amps_algo = "mp2"
-            self.t1, self.t2 = self.init_amps()
+        
+        self.t1, self.t2 = self.init_amps()
 
 
 
@@ -394,6 +399,20 @@ class CTSD(lib.StreamObject):
         t_xa = self._t1s[:, self.c_nmo:]
         self.t1 = {"xi": t_xi, "xa": t_xa}
 
+    def collect_amps(self):
+        self.collect_t1s()
+        self.collect_t2s()
+        return self.t1s, self.t2s
+
+    def collect_t2s(self):
+        self._t2s[:, :, :self.c_nmo, :self.c_nmo] = self.t2["xyij"] 
+        self._t2s[:, :, self.c_nmo:, self.c_nmo:] = self.t2["xyab"]
+        self._t2s[:, :, self.c_nmo:, :self.c_nmo] = self.t2["xyai"]
+
+    def collect_t1s(self):
+        self._t1s[:, :self.c_nmo] = self.t1["xi"]
+        self._t1s[:, self.c_nmo:] = self.t1["xa"]
+
     def init_amps(self, algo="mp2"):
         """
         Get the transformaiton amplitudes.
@@ -407,7 +426,12 @@ class CTSD(lib.StreamObject):
         self._amps_algo = algo
         # self.part_amps()
         self.t1, self.t2 = self.get_amps()
-        #self.update_t2_full()
+        # assign t1 and t2 partitions to _t1s and _t2s big arrays.
+        # whenever self.t1 and self.t2 are updated, _t1s and _t2s should also be
+        # updated. FIXME: this is not the ideal way to do things, because it is
+        # error prone and takes additional memory. (But it is convenient to implement
+        # things this way.)
+        self.collect_amps()
         return self.t1, self.t2
 
     def get_amps(self):
@@ -445,8 +469,8 @@ class CTSD(lib.StreamObject):
         e_ai = -(mo_e_a[:, None] - mo_e_i[None, :])
         e_xa = -(mo_e_x[:, None] - mo_e_a[None, :])
 
-        self.t1["xi"] = fock_mn[self.t_nmo:, :self.c_nmo]
-        self.t1["xa"] = fock_mn[self.t_nmo:, self.c_nmo:self.t_nmo]
+        self.t1["xi"] = fock_mn[self.t_nmo:, :self.c_nmo].copy()
+        self.t1["xa"] = fock_mn[self.t_nmo:, self.c_nmo:self.t_nmo].copy()
 
         self.t2["xyab"] = self.eri[self.t_nmo:, self.t_nmo:,
                         self.c_nmo:self.t_nmo:, self.c_nmo:self.t_nmo].copy()

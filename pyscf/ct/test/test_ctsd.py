@@ -10,13 +10,18 @@ def setUpModule():
     global mol, mf, myct
     mol = gto.Mole()
     mol.verbose = 7
-    mol.output = '/dev/null'
-    mol.atom = [
-        [8 , (0. , 0.     , 0.)],
-        [1 , (0. , -0.757 , 0.587)],
-        [1 , (0. , 0.757  , 0.587)]]
+    #mol.output = '/dev/null'
+    #mol.atom = '''
+    #    O  0.  0.  0.;
+    #    H  0.  -1.107176  1.107176;
+    #    H  0.  1.107176  1.107176;
+    #    '''
+    mol.atom = '''
+        O    0.000000    0.000000    0.117790
+        H    0.000000    0.755453   -0.471161
+        H    0.000000   -0.755453   -0.471161'''
 
-    mol.basis = '631g'
+    mol.basis = 'ccpvdz'
     mol.build()
     mf = scf.RHF(mol)
     mf.chkfile = tempfile.NamedTemporaryFile().name
@@ -184,9 +189,13 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(e_hf_ct, e_hf, 8)
 
     def test_ct_mp2(self):
-        mf = scf.ROHF(mol).run()
+        #mf = scf.RHF(mol).run()
         mp2_e = mp.MP2(mf).run()
-        myct = ct.ctsd.CTSD(mf).run()
+        c0, c1, c2 = myct.kernel()
+        bar_hf_e = myct.get_hf_energy(c0, c1, c2)
+        print("CT HF energy = ", bar_hf_e)
+
+
 
 if __name__ == "__main__":
     print("Full Tests for CT")
