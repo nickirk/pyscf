@@ -28,7 +28,9 @@ def setUpModule():
     mf.conv_tol_grad = 1e-8
     mf.kernel()
 
-    myct = ctsd.CTSD(mf)
+    # active space is set to 0. The reference energy of the
+    # CT Ham should reproduce MP2 energy
+    myct = ctsd.CTSD(mf, a_nmo=0)
 
 
 def tearDownModule():
@@ -173,7 +175,7 @@ class KnownValues(unittest.TestCase):
         # get  mf hcore in mo
         hcore = myct.ao2mo(myct.mf.get_hcore())
 
-        myct.init_amps("zero")
+        myct.amps_algo = "zero"
         c0, h1, v2 = myct.kernel()
         assert np.allclose(hcore, h1)
         # get original eri from mf and mo_coeff
@@ -191,6 +193,7 @@ class KnownValues(unittest.TestCase):
     def test_ct_mp2(self):
         #mf = scf.RHF(mol).run()
         mp2_e = mp.MP2(mf).run()
+        myct.amps_algo = "mp2"
         c0, c1, c2 = myct.kernel()
         ct_hf_e = myct.get_hf_energy(c0, c1, c2)
         print("CT HF energy = ", ct_hf_e)
@@ -204,7 +207,7 @@ class KnownValues(unittest.TestCase):
                      myct.c_nmo:myct.t_nmo, myct.c_nmo:myct.t_nmo]
         ct_t2 = ct_vvoo / lib.direct_sum("ai+bj -> abij", e_ia, e_ia)
         ct_mp2_e = 2. * lib.einsum("abij, ijab -> ", ct_t2, ct_oovv)
-        ct_mp2_e -= lib.einsum("abij, jiab -> ", ct_t2, ct_oovv)
+        ct_mp2_e -= lib.einsum("abji, ijab -> ", ct_t2, ct_oovv)
         ct_mp2_total = ct_hf_e + ct_mp2_e
         print("CT MP2 corr = ", ct_mp2_e)
         print("CT MP2 total = ", ct_mp2_total)

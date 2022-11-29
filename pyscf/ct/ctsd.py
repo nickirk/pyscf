@@ -30,6 +30,31 @@ from pyscf.lib import logger
 from pyscf import ao2mo
 from functools import reduce
 
+def symmetrize(t):
+    """This function symmetrizes tensor t of dim 2 or 4.
+
+    Args:
+        t (np ndarray): 2 or 4 dimension np ndarray to be symmetrized.
+    
+    Returns:
+        t_sym (np ndarray): symmetrized tensor of the same size as the input tensor.
+
+    """
+    t_sym = t.copy()
+    if t.ndim == 2:
+        t_sym += t.T
+        t_sym /= 2.
+    elif t.ndim == 4:
+        t_sym += t.transpose((1, 0, 3, 2))
+        t_sym += t.transpose((2, 3, 0, 1))
+        t_sym += t.transpose((3, 2, 1, 0))
+        t_sym *= 1./4 
+    else:
+        raise ValueError("Incorrect length of tensor: "+str(len(t))+"! Only 2 or 4 is allowed.")
+
+    return t_sym
+
+    
 def get_d3_slice_direct(dm1=None, dm2=None, slices=None):
     """
     Function to compute a block of the 3-RDM, according to the provided
@@ -175,8 +200,6 @@ class CTSD(lib.StreamObject):
         # virtuals, a,b,c,d...
         if a_nmo is None:
             a_nmo = int(self.c_nmo * 1.5)
-            a_nmo = 0
-            #a_nmo = int(self.nmo-self.c_nmo)
         self.a_nmo = a_nmo
         # target orbitals are the combination of core and active orbitals, 
         # indices p,q,r,s
@@ -254,48 +277,20 @@ class CTSD(lib.StreamObject):
         # initialize the amplitudes
         if "amps_algo" in kwargs:
             self.amps_algo = kwargs["amps_algo"]
-        else:
-            self.amps_algo = "mp2"
         
         self.t1, self.t2 = self.init_amps()
+
+         
 
 
 
         # we need the one-body part of the original Hamiltonian h_mn
         h_mn = self.mf.get_hcore()
         h_mn = self.ao2mo(h_mn)
-        c1_mn = self.get_c1(h_mn)
 
-        # [h1, T2] contribution is 0.
-        # self.commute_o1_t2_12(h_mn)
-
-        # need dm1 and dm2 (user defined)
-        dm2_bar = get_d_bar(self.dm1, self.dm2)
-        c1_prime_mn = self.get_c1_prime(dm2_bar)
-
-
-        # [h2, T1]
-        c2_prime_mnuv = self.get_c2_prime()
-
-        # [h2, T2]
-        ct_0 = self.get_c0(self.dm1, self.dm2)
-        c2_dprime_mnuv = self.get_c2_dprime(self.dm1)
-
-        ct_h1 = c1_mn + c1_prime_mn
-        # symmetrize ct_h1
-        ct_h1 += ct_h1.T
-        ct_h1 /= 2.
+        ct_0, ct_h1, ct_v2 = self.commute(h1=h_mn, v2=self.eri)
 
         ct_h1 += h_mn
-
-        ct_v2 = c2_prime_mnuv + c2_dprime_mnuv
-        # symmetrize ct_v2
-        ct_v2_tmp = ct_v2.copy()
-        ct_v2_tmp += ct_v2.transpose((1, 0, 3, 2))
-        ct_v2_tmp += ct_v2.transpose((2, 3, 0, 1))
-        ct_v2_tmp += ct_v2.transpose((3, 2, 1, 0))
-        ct_v2 = 1./4 * ct_v2_tmp
-
         ct_v2 += self.eri
 
         # The second commutator 1/2*[[F, T], T]
@@ -305,19 +300,571 @@ class CTSD(lib.StreamObject):
         fock_mn = self.mf.get_fock()
         fock_mn = self.ao2mo(fock_mn)
 
-        ct_h1 += 1./2 * self.commute_o1_t(self.commute_o1_t(fock_mn))
+        # The following [o1, t] gives rise to 1- and 2-body terms
+        c0_f, c1_f, c2_f = self.commute(*self.commute(h1=fock_mn))
 
 
         # final step might need to do some transformation on the eris so that
         # other solvers can use it directly as usual integrals.
-        self.ct_0 = ct_0
-        self.ct_h1 = ct_h1
-        self.ct_v2 = ct_v2
-        return ct_0, ct_h1, ct_v2
+        self.ct_0 = ct_0 + c0_f/2.
+        self.ct_h1 = ct_h1 + c1_f/2.
+        self.ct_v2 = ct_v2 + c2_f/2.
+        return self.ct_0, self.ct_h1, self.ct_v2
+
+
+    def init_amps(self):
+        """
+        Get the transformaiton amplitudes.
+
+        Args:
+            algo: string. Method to compute amps.
+
+        Returns:
+
+        """
+        # self.part_amps()
+        self.t1, self.t2 = self.get_amps()
+        print("Using "+self._amps_algo+" amps...")
+        # assign t1 and t2 partitions to _t1s and _t2s big arrays.
+        # whenever self.t1 and self.t2 are updated, _t1s and _t2s should also be
+        # updated. FIXME: this is not the ideal way to do things, because it is
+        # error prone and takes additional memory. (But it is convenient to implement
+        # things this way.)
+        self.collect_amps()
+        return self.t1, self.t2
+
+    def get_amps(self):
+        if self._amps_algo == "mp2" or self._amps_algo is None:
+            return self.get_mp2_amps()
+        elif self._amps_algo == "zero":
+            return self.get_zero_amps()
+        else:
+            raise NotImplementedError
+
+    def get_zero_amps(self):
+        # for test purpose
+        self.t1["xi"] = np.zeros([self.e_nmo, self.c_nmo])
+        self.t1["xa"] = np.zeros([self.e_nmo, self.a_nmo])
+
+        self.t2["xyij"] = np.zeros([self.e_nmo, self.e_nmo, self.c_nmo,
+                                    self.c_nmo])
+        self.t2["xyab"] = np.zeros([self.e_nmo, self.e_nmo, self.a_nmo,
+                                    self.a_nmo])
+        self.t2["xyai"] = np.zeros([self.e_nmo, self.e_nmo, self.a_nmo,
+                                    self.c_nmo])
+        return self.t1, self.t2
+
+    def get_mp2_amps(self):
+
+        fock_mn = self.mf.get_fock()
+        fock_mn = self.ao2mo(fock_mn)
+
+        mo_e_i = self.mf.mo_energy[:self.c_nmo]
+        # if regularization is needed, one can do it here.
+        mo_e_a = self.mf.mo_energy[self.c_nmo:self.t_nmo]
+        mo_e_x = self.mf.mo_energy[self.t_nmo:]
+
+        e_xi = -(mo_e_x[:, None] - mo_e_i[None, :])
+        e_ai = -(mo_e_a[:, None] - mo_e_i[None, :])
+        e_xa = -(mo_e_x[:, None] - mo_e_a[None, :])
+
+        self.t1["xi"] = fock_mn[self.t_nmo:, :self.c_nmo].copy()
+        self.t1["xa"] = fock_mn[self.t_nmo:, self.c_nmo:self.t_nmo].copy()
+
+        self.t2["xyab"] = self.eri[self.t_nmo:, self.t_nmo:,
+                        self.c_nmo:self.t_nmo:, self.c_nmo:self.t_nmo].copy()
+        self.t2["xyij"] = self.eri[self.t_nmo:, self.t_nmo:, :self.c_nmo,
+                               :self.c_nmo].copy()
+        self.t2["xyai"] = self.eri[self.t_nmo:, self.t_nmo:,
+                          self.c_nmo:self.t_nmo, :self.c_nmo].copy()
+
+        self.t1["xi"] /= e_xi
+        self.t1["xa"] /= e_xa
+
+        #self.t2["xyab"] /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
+        self.t2["xyij"] /= lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
+        #self.t2["xyai"] /= lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
+        #self.t2["xyij"] *= 0.
+        self.t2["xyab"] *= 0.
+        self.t2["xyai"] *= 0.
+
+
+        return self.t1, self.t2
+
+    def get_f12_amps(self):
+        raise NotImplementedError
+
+    def commute(self, c0=0., h1=None, v2=None):
+        c1 = None
+        c2 = None
+
+        if h1 is not None:
+            c1, c2 = self.commute_o1_t(h1)
+        if v2 is not None:
+            c0, c1_prime, c2_prime, c2_dprime = self.commute_o2_t(v2)
+            c1 += c1_prime
+            c2 += c2_prime + c2_dprime
+        
+        if c1 is not None:
+            c1 = symmetrize(c1)
+        if c2 is not None:
+            c2 = symmetrize(c2)
+
+        return c0, c1, c2
+
+    def commute_o1_t(self, o1_mn):
+        """
+        This function assembles the two parts of the commutator
+        [o1, T]=[o1, t1]+[o1, t2] together.
+
+        Args:
+            o1_mn: 2D array of size [nmo, nmo]. The one-body integral to be
+            transformed
+
+        Returns:
+            ct_o1: np ndarray, [nmo, nmo]
+            ct_v2: np ndarray, [nmo, nmo, nmo, nmo]
+        """
+        # Note get_c1 already symmetrize the transformed integral.
+        ct_o1 = self.get_c1(o1_mn)
+
+        # Note get_c2 has 0 contribution to integrals within the target space.
+        ct_v2 = self.get_c2(o1_mn)
+
+        return ct_o1, ct_v2
+    
+    def commute_o2_t(self, v2):
+        """
+        This function assembles the two parts of the commutator
+        [o2, T]=[o2, t1]+[o1, t2] together.
+
+        Args:
+            v2: 4D array of size [nmo, nmo, nmo, nmo]. The two-body integral to be
+            transformed
+
+        Returns:
+            ct_o1: np ndarray, [nmo, nmo]
+            ct_v2: np ndarray, [nmo, nmo, nmo, nmo]
+        """
+        c2_prime = self.get_c2_prime(v2)
+
+        c0 = self.get_c0(v2)
+        c1_prime = self.get_c1_prime(v2)
+        c2_dprime = self.get_c2_dprime(v2)
+
+
+        return c0, c1_prime, c2_prime, c2_dprime
+
+    def get_c1(self, o_mn=None):
+        """
+        This function calculates the commutator between h1_mn and O_px.
+
+        Args:
+            o_mn: a 1-body (2 indices) tensor defined on the parent space
+
+        Returns:
+            c_mn: transformed integral, defined on the parent space
+        """
+        if o_mn is None:
+            o_mn = self.mf.get_hcore()
+            o_mn = self.ao2mo(o_mn)
+        o_mx = o_mn[:, self.t_nmo:]
+        o_mi = o_mn[:, :self.c_nmo]
+        o_ma = o_mn[:, self.c_nmo:self.t_nmo]
+        t_xa = self.t1["xa"]
+        t_xi = self.t1["xi"]
+        # equ (35) in Ref: Phys. Chem. Chem. Phys., 2012, 14, 7809–7820
+        c_mn = np.zeros([self.nmo, self.nmo])
+        # only the following terms are relevant to the target space
+        c_mn[:, self.c_nmo:self.t_nmo] = 2. * lib.einsum("mx, xa -> ma",
+                                                         o_mx, t_xa)
+        c_mn[:, :self.c_nmo] = 2. * lib.einsum("mx, xi -> mi", o_mx, t_xi)
+
+        # connections between target and external space
+        c_mn[:, self.t_nmo:] -= 2. * lib.einsum("ma, xa -> mx", o_ma, t_xa)
+        c_mn[:, self.t_nmo:] -= 2. * lib.einsum("mi, xi -> mx", o_mi, t_xi)
+
+        c_mn = symmetrize(c_mn)
+
+        return c_mn
+
+    def get_c2(self, o_mn=None, only_target=True):
+        """
+        This function computes the [\hat{h}_1, \hat{T}_2]_{1,2}, equ (37) 
+        and (38) in Ref: Phys. Chem. Chem. Phys., 2012, 14, 7809–7820
+
+        Args:
+            o_mn: Rank 2 tensor of size [nao, nao], defined on the parent
+                  basis set
+
+        Returns:
+            ct_eris: Transformed rank 4 tensor defined on the parent basis set.
+        """
+        #o_xa = o_mn[self.t_nmo:, self.c_nmo:self.t_nmo]
+        #o_xi = o_mn[self.t_nmo:, :self.c_nmo]
+        o_mx = o_mn[:, self.t_nmo:]
+        o_mp = o_mn[:, :self.t_nmo]
+        c2 = np.zeros(self.eri.shape)
+        c2[:, self.t_nmo:, :self.t_nmo, :self.t_nmo] = 4.*lib.einsum(
+            "mx, xypq -> mypq", o_mx, self._t2s
+            )
+        c2[:, :self.t_nmo, self.t_nmo:, self.t_nmo:] += -4.*lib.einsum(
+            "mp, xypq -> mqxy", o_mp, self._t2s
+        )
+
+        c2 = symmetrize(c2)
+
+        return c2
+
+    def get_c2_prime(self, v2=None):
+        """
+        This function computes the CT contirubtion [v2, t1].
+        Only contribution to the target space is implemented. Connections
+        between target and external space, or that within external space
+        are currently not implemented.
+
+        Args:
+            v2: rank 4 tensor (ndarray). Specify which 2-body operator to
+                commute with the T1 operator. If not supplied, the default is
+                the Coulomb eri.
+        Returns:
+            c2_prime: rank 4 tensor. 
+        
+        """
+        if v2 is None:
+            v2 = self.eri
+        c2_prime = np.zeros(v2.shape)
+        v2_ooeo = v2[:self.c_nmo, :self.c_nmo, self.t_nmo:, :self.c_nmo]
+        oooo = 4. * lib.einsum("ijxl, xk -> ijkl", v2_ooeo, self.t1["xi"])
+        c2_prime[:self.c_nmo, :self.c_nmo, :self.c_nmo:, :self.c_nmo] = oooo
+
+        v2_oveo = v2[:self.c_nmo, self.c_nmo:self.t_nmo, self.t_nmo:, :self.c_nmo]
+        ovoo = 4. * lib.einsum("iaxk, xj -> iajk", v2_oveo, self.t1["xi"])
+        c2_prime[:self.c_nmo, self.c_nmo:self.t_nmo, :self.c_nmo,
+                 :self.c_nmo] = ovoo
+
+        v2_ooev = v2[:self.c_nmo, :self.c_nmo, self.t_nmo:, self.c_nmo:self.t_nmo]
+        oovv = 4. * lib.einsum("ijxb, xa -> ijab", v2_ooev, self.t1["xa"])
+        c2_prime[:self.c_nmo, :self.c_nmo, self.c_nmo:self.t_nmo,
+                 self.c_nmo:self.t_nmo] = oovv
+
+        v2_oveo = v2[:self.c_nmo, self.c_nmo:self.t_nmo, self.t_nmo:, :self.c_nmo]
+        ovvo = 4. * lib.einsum("iaxj, xb -> iabj", v2_oveo, self.t1["xa"])
+        c2_prime[:self.c_nmo, self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo,
+                 :self.c_nmo] = ovvo
+
+        v2_ovev = v2[:self.c_nmo, self.c_nmo:self.t_nmo, self.t_nmo:,
+                  self.c_nmo:self.t_nmo]
+        ovov = 4. * lib.einsum("iaxb, xj -> iajb", v2_ovev, self.t1["xi"])
+        c2_prime[:self.c_nmo, self.c_nmo:self.t_nmo, :self.c_nmo,
+                 self.c_nmo:self.t_nmo] = ovov
+        ovvv = 4. * lib.einsum("iaxc, xb -> iabc", v2_ovev, self.t1["xa"])
+        c2_prime[:self.c_nmo, self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo,
+                 self.c_nmo:self.t_nmo] = ovvv
+
+        v2_vvev = v2[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo, self.t_nmo:,
+                     self.c_nmo:self.t_nmo]
+        vvvv = 4. * lib.einsum("abxd, xc -> abcd", v2_vvev, self.t1["xa"])
+        c2_prime[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo,
+                 self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo] = vvvv
+
+        return c2_prime
+
+    def get_c0(self, v2=None, dm1=None, dm2=None):
+        """
+        Calculate the constant contribution to energy from CT.
+        Args:
+            v2: 4D ndarray. 2-body operator to be transformed.
+        Returns:
+            c0: float.
+
+        """
+        if v2 is None:
+            v2 = self.eri
+
+        if dm1 is None:
+            dm1 = self.dm1
+        if dm2 is None:
+            dm2 = self.dm2
+
+        # construct Do^{p1p2e2}_{a1q2a2}
+        dm2 = get_d_zero(dm1, dm2)
+
+        # need a slice of the full ERI
+        v_mnxu = v2[:, :, self.t_nmo:, :]
+        slices = [0, self.nmo, 0, self.nmo, self.t_nmo, self.nmo,
+                  0, self.t_nmo, 0, self.nmo, 0, self.t_nmo]
+        d3 = get_d3_slice(dm1, dm2, slices)
+        t2 = self._t2s
+        c0 = 2.0 * lib.einsum("mnxu, xypq, mnypuq ->", v_mnxu, t2,
+                              d3)
+        v_mnpu = v2[:, :, :self.t_nmo, :]
+        slices = [0, self.nmo, 0, self.nmo, 0, self.t_nmo,
+                  self.t_nmo, self.nmo, 0, self.nmo, self.t_nmo,
+                  self.nmo]
+        d3 = get_d3_slice(dm1, dm2, slices)
+        c0 -= 2.0 * lib.einsum("mnpu, xyqr, mnrxuy ->", v_mnpu, t2,
+                               d3)
+
+        return c0
+
+    def get_c1_prime(self, v2=None, dm2_bar=None):
+        """
+        Function to compute the 2D tensor associated with the 1-body operator
+        generated by [h2, T2]
+
+        Args:
+            v2: 4D ndarray. Two-body operator to be commuted with t1.
+            dm2_bar: 4D tensor. As defined in equation (19) in Ref:
+            Phys. Chem. Chem. Phys., 2012, 14, 7809–7820
+
+        Returns:
+            c1_prime_mn: 2D tensor. The 1-body contribution from [h2, T2]
+        """
+
+        if v2 is None:
+            v2 = self.eri
+
+        if dm2_bar is None:
+            dm2_bar = get_d_bar(self.dm1, self.dm2)
+        # need the original t2
+        t2 = self._t2s
+        # second term in 46b
+        dm2_bar_xipj = dm2_bar[self.t_nmo:, :self.c_nmo, :self.t_nmo,
+                       :self.c_nmo]
+        s1_xipj = -1. / 2 * lib.einsum("xypq, xipj -> yiqj", t2,
+                                       dm2_bar_xipj)
+        dm2_bar_xijp = dm2_bar[self.t_nmo:, :self.c_nmo,
+                       :self.c_nmo, :self.t_nmo]
+        # first term in 46b
+        s1_xipj -= 1. / 2 * lib.einsum("xyqp, xijp -> yiqj", t2,
+                                       dm2_bar_xijp)
+
+        # constructing s2
+        dm2_bar_iypq = dm2_bar[:self.c_nmo, self.t_nmo:,
+                       :self.t_nmo, :self.t_nmo]
+        s2_xi = lib.einsum("xypq, iypq -> xi", t2, dm2_bar_iypq)
+
+        # constructing s3
+        dm2_bar_ipxy = dm2_bar[:self.c_nmo, :self.t_nmo,
+                       self.t_nmo:, self.t_nmo:]
+        s3_ip = lib.einsum("xypq, iqxy -> ip", t2, dm2_bar_ipxy)
+
+        # constructing s4
+        dm2_bar_ijpq = dm2_bar[:self.c_nmo, :self.c_nmo,
+                       :self.t_nmo, :self.t_nmo]
+        s4_xyij = 1. / 2 * lib.einsum("xypq, ijpq -> xyij", t2, dm2_bar_ijpq)
+
+        # constructing s5
+        dm2_bar_ijxy = dm2_bar[:self.c_nmo, :self.c_nmo,
+                       self.t_nmo:, self.t_nmo:]
+        s5_ijpq = 1. / 2 * lib.einsum("xypq, ijxy -> ijpq", t2, dm2_bar_ijxy)
+
+        # s6
+        # TODO: This contraction is very heavy. Need optimization!!
+        s6_mn = lib.einsum("mnuv, wnuv -> wm", v2, dm2_bar)
+        s6_px = s6_mn[:self.t_nmo, self.t_nmo:]
+        s6_xp = s6_mn[self.t_nmo:, :self.t_nmo]
+
+        # s0
+        s0_xipj = lib.einsum("xypq, xipj -> yiqj", t2, dm2_bar_xipj)
+        s0_xipj -= 1./2 * lib.einsum("xyqp, xipj -> yiqj", t2, dm2_bar_xipj)
+
+        # constructing c1_prime
+        c1_prime_mn = np.zeros([self.nmo, self.nmo])
+        # adding contributions from e1_prime_pq
+        # first term in equation 44
+        v_mixj = v2[:, :self.c_nmo, self.t_nmo:,
+                    :self.c_nmo]
+        v_mijx = v2[:, :self.c_nmo, :self.c_nmo,
+                    self.t_nmo:]
+        c1_prime_mn[:, :self.t_nmo] -= lib.einsum("mixj, xipj -> mp", v_mixj,
+                                                  s0_xipj)
+        c1_prime_mn[:, :self.t_nmo] -= lib.einsum("mijx, xipj -> mp", v_mijx,
+                                                  s1_xipj)
+
+        # second term in equation 44
+        v_minx = v2[:, :self.c_nmo, :, self.t_nmo:].copy()
+        v_minx -= 1. / 2 * v2[:, :self.c_nmo, self.t_nmo:,
+                           :].transpose(0, 1, 3, 2)
+        c1_prime_mn -= lib.einsum("minx, xi -> mn", v_minx, s2_xi)
+
+        # third term in equation 44
+        v_ijxm = v2[:self.c_nmo, :self.c_nmo,
+                    self.t_nmo:, :]
+        c1_prime_mn[:, self.t_nmo:] += lib.einsum("ijxm, xyij -> my",
+                                                  v_ijxm, s4_xyij)
+
+        # fourth term in equation 44
+        # Note that s6_px has none zero values in block ap, but it does not
+        # contribute to e1_prime_pq, since in the end it contracts with the
+        # t2 amplitudes which have only none zero in block xypq.
+        c1_prime_mn[:self.t_nmo, self.t_nmo:] -= \
+            lib.einsum("xypq, qy -> px", t2, s6_px)
+
+        # adding contributions from a1_prime_pq, note that the overall sign is -
+        # first term in equation 45
+        v_mipj = v2[:, :self.c_nmo, :self.t_nmo, :self.c_nmo]
+        v_mijp = v2[:, :self.c_nmo, :self.c_nmo, :self.t_nmo]
+        c1_prime_mn[:, self.t_nmo:] += lib.einsum("mipj, xipj -> mx",
+                                                  v_mipj, s0_xipj)
+        c1_prime_mn[:, self.t_nmo:] += lib.einsum("mijp, xipj -> mx",
+                                                  v_mijp, s1_xipj)
+
+        # second term in equation 45
+        v_minp = v2[:, :self.c_nmo, :, :self.t_nmo].copy()
+        v_mipn = v2[:, :self.c_nmo, :self.t_nmo, :]
+        v_minp -= 1. / 2 * v_mipn.transpose((0, 1, 3, 2))
+        c1_prime_mn += lib.einsum("minp, ip -> mn", v_minp, s3_ip)
+
+        # third term in equation 45
+        v_ijpm = v2[:self.c_nmo, :self.c_nmo, :self.t_nmo, :]
+        c1_prime_mn[:, :self.t_nmo] -= lib.einsum("ijpm, ijpq -> mq",
+                                                  v_ijpm, s5_ijpq)
+
+        # fourth term in equation 45
+        c1_prime_mn[:self.t_nmo, self.t_nmo:] += \
+            lib.einsum("xypq, yq -> px", t2, s6_xp)
+
+        c1_prime_mn *= 2.
+
+        return c1_prime_mn
+
+    def get_c2_dprime(self, v2=None, dm1=None):
+        """
+        Function to construct c_double_prime_mnuv, Eq (47)
+        Args:
+            v2: 4D ndarray. 2-body operator 
+            dm1: 2D tensor. 1-RDM
+
+        Returns:
+            c2_dprime_mnuv: 4D tensor.
+        """
+        if v2 is None:
+            v2 = self.eri
+        
+        if dm1 is None:
+            dm1 = self.dm1
+
+        # Construct T0-T3 intermediates first.
+        t2 = self._t2s
+        cap_t0_xyip = lib.einsum("xypq, ip -> xyiq", t2, dm1[:self.c_nmo,
+                                                         :self.t_nmo])
+        cap_t1_ixpq = lib.einsum("xypq, ix -> iypq", t2, dm1[:self.c_nmo,
+                                                         self.t_nmo:])
+        cap_t2_xp = lib.einsum("xypq, xp -> yq", t2, dm1[self.t_nmo:,
+                                                     :self.t_nmo])
+        cap_t2_xp -= 1. / 2 * lib.einsum("yxqp, xp -> yq", t2,
+                                         dm1[self.t_nmo:,
+                                         :self.t_nmo])
+        cap_t3_mn = lib.einsum("mnuv, nv -> mn", v2, dm1)
+        cap_t3_mn -= 1. / 2 * lib.einsum("mnvu, nv -> mv", v2, dm1)
+
+        c2_dprime_mnuv = np.zeros([self.nmo, self.nmo, self.nmo,
+                                   self.nmo])
+
+        # adding e_dprime_mnuv contribution
+        # TODO: the on-the-fly slicing is not the most efficient way, fix it
+        # first term in equation 48
+        v_mnxy = v2[:, :, self.t_nmo:, self.t_nmo:]
+        c2_dprime_mnuv[:, :, :self.t_nmo, :self.t_nmo] += \
+            1. / 2 * lib.einsum("mnxy, xypq -> mnpq", v_mnxy, t2)
+        # second term in equ 48
+        v_mxni = v2[:, self.t_nmo:, :, :self.c_nmo]
+        c2_dprime_mnuv[:, :self.t_nmo, :, self.t_nmo:] += \
+            lib.einsum("mxni, xyip -> mpny", v_mxni, cap_t0_xyip)
+        c2_dprime_mnuv[:, :self.t_nmo, :, self.t_nmo:] -= \
+            1. / 2 * lib.einsum("mxni, yxip -> mpny", v_mxni, cap_t0_xyip)
+        v_mxin = v2[:, self.t_nmo:, :self.c_nmo, :]
+        c2_dprime_mnuv[:, :self.t_nmo, :, self.t_nmo:] -= \
+            1. / 2 * lib.einsum("mxin, xyip -> mpny", v_mxin, cap_t0_xyip)
+        # third term in equ 48
+        c2_dprime_mnuv[:, :self.t_nmo, self.t_nmo:, :] -= \
+            1. / 2 * lib.einsum("mxin, yxip -> mpxn", v_mxin, cap_t0_xyip)
+
+        # fourth term in equ 48
+        v_mnxi = v2[:, :, self.t_nmo:, :self.c_nmo]
+        c2_dprime_mnuv[:, :, :self.t_nmo, :self.t_nmo] -= \
+            1. / 2 * lib.einsum("mnxi, ixpq -> mnqp", v_mnxi, cap_t1_ixpq)
+
+        # fifth term in equ 48
+        v_mnxu = v2[:, :, self.t_nmo:, :]
+        c2_dprime_mnuv[:, :, :self.t_nmo, :] += \
+            lib.einsum("mnxu, xp -> mnpu", v_mnxu, cap_t2_xp)
+
+        # sixth term in equ 48
+        c2_dprime_mnuv[:, self.t_nmo:, :self.t_nmo,
+        :self.t_nmo] += lib.einsum("xypq, mx -> mypq", t2,
+                                   cap_t3_mn[:, self.t_nmo:])
+
+        # adding contributions from a_dprime_mnuv, notice the overall - sign
+        v_mnpq = v2[:, :, :self.t_nmo, :self.t_nmo]
+        c2_dprime_mnuv[:, :, self.t_nmo:, self.t_nmo:] += \
+            1. / 2 * lib.einsum("mnpq, xypq -> mnxy", v_mnpq, t2)
+        # second term in equ 49
+        v_mpni = v2[:, :self.t_nmo, :, :self.c_nmo]
+        c2_dprime_mnuv[:, self.t_nmo:, :, :self.t_nmo] += \
+            lib.einsum("mpni, ixpq -> mxnq", v_mpni, cap_t1_ixpq)
+        c2_dprime_mnuv[:, self.t_nmo:, :, :self.t_nmo] -= \
+            1. / 2 * lib.einsum("mpni, ixpq -> mxnq", v_mpni, cap_t1_ixpq)
+        v_mpin = v2[:, :self.t_nmo, :self.c_nmo, :]
+        c2_dprime_mnuv[:, self.t_nmo:, :, :self.t_nmo] -= \
+            1. / 2 * lib.einsum("mpin, ixpq -> mxnq", v_mpin, cap_t1_ixpq)
+
+        # third term in equ 49
+        c2_dprime_mnuv[:, self.t_nmo:, :self.t_nmo, :] -= \
+            1. / 2 * lib.einsum("mpin, ixqp -> mxqn", v_mpin, cap_t1_ixpq)
+
+        # fourth term in equ 49
+        v_mnpi = v2[:, :, :self.t_nmo, :self.c_nmo]
+        c2_dprime_mnuv[:, :, self.t_nmo:, self.t_nmo:] -= \
+            1. / 2 * lib.einsum("mnpi, xyip -> mnyx", v_mnpi, cap_t0_xyip)
+
+        # fifth term in equ 49
+        v_mnpu = v2[:, :, :self.t_nmo, :]
+        c2_dprime_mnuv[:, :, self.t_nmo:, :] += \
+            lib.einsum("mnpu, xp -> mnxu", v_mnpu, cap_t2_xp)
+
+        # sixth term in equ 49
+        c2_dprime_mnuv[:, :self.t_nmo, self.t_nmo:,
+        self.t_nmo:] += lib.einsum("xypq, mp -> mqxy", t2,
+                                   cap_t3_mn[:, :self.t_nmo])
+
+        c2_dprime_mnuv *= 4.
+        return c2_dprime_mnuv
+
+    def get_hf_energy(self, c0=None, c1=None, c2=None):
+        if c0 is None:
+            c0 = self.ct_0
+        if c1 is None:
+            c1 = self.ct_h1
+        if c2 is None:
+            c2 = self.ct_v2
+
+        e_hf = 2. * lib.einsum("ii -> ", c1[:self.c_nmo, :self.c_nmo])
+        e_hf += 2. * lib.einsum("ijij -> ", c2[:self.c_nmo, :self.c_nmo,
+                                             :self.c_nmo, :self.c_nmo])
+        e_hf -= lib.einsum("ijji -> ", c2[:self.c_nmo, :self.c_nmo,
+                                            :self.c_nmo, :self.c_nmo])
+        e_hf += c0
+        e_hf += self.mf.energy_nuc()
+        return e_hf
+
+    @property
+    def mo_energy(self):
+        if self._mo_energy is None:
+            mo_energy = self.get_mo_energy()
+            self._mo_energy = mo_energy.copy()
+        return mo_energy
+
+    @mo_energy.setter
+    def mo_energy(self, value):
+        self._mo_energy = value
 
     @property
     def amps_algo(self):
         return self._amps_algo
+
     @amps_algo.setter
     def amps_algo(self, algo):
         if not isinstance(algo, str):
@@ -414,503 +961,6 @@ class CTSD(lib.StreamObject):
     def collect_t1s(self):
         self._t1s[:, :self.c_nmo] = self.t1["xi"]
         self._t1s[:, self.c_nmo:] = self.t1["xa"]
-
-    def init_amps(self, algo="mp2"):
-        """
-        Get the transformaiton amplitudes.
-
-        Args:
-            algo: string. Method to compute amps.
-
-        Returns:
-
-        """
-        self._amps_algo = algo
-        # self.part_amps()
-        self.t1, self.t2 = self.get_amps()
-        # assign t1 and t2 partitions to _t1s and _t2s big arrays.
-        # whenever self.t1 and self.t2 are updated, _t1s and _t2s should also be
-        # updated. FIXME: this is not the ideal way to do things, because it is
-        # error prone and takes additional memory. (But it is convenient to implement
-        # things this way.)
-        self.collect_amps()
-        return self.t1, self.t2
-
-    def get_amps(self):
-        if self._amps_algo == "mp2":
-            return self.get_mp2_amps()
-        elif self._amps_algo == "zero":
-            return self.get_zero_amps()
-        else:
-            raise NotImplementedError
-
-    def get_zero_amps(self):
-        # for test purpose
-        self.t1["xi"] = np.zeros([self.e_nmo, self.c_nmo])
-        self.t1["xa"] = np.zeros([self.e_nmo, self.a_nmo])
-
-        self.t2["xyij"] = np.zeros([self.e_nmo, self.e_nmo, self.c_nmo,
-                                    self.c_nmo])
-        self.t2["xyab"] = np.zeros([self.e_nmo, self.e_nmo, self.a_nmo,
-                                    self.a_nmo])
-        self.t2["xyai"] = np.zeros([self.e_nmo, self.e_nmo, self.a_nmo,
-                                    self.c_nmo])
-        return self.t1, self.t2
-
-    def get_mp2_amps(self):
-
-        fock_mn = self.mf.get_fock()
-        fock_mn = self.ao2mo(fock_mn)
-
-        mo_e_i = self.mf.mo_energy[:self.c_nmo]
-        # if regularization is needed, one can do it here.
-        mo_e_a = self.mf.mo_energy[self.c_nmo:self.t_nmo]
-        mo_e_x = self.mf.mo_energy[self.t_nmo:]
-
-        e_xi = -(mo_e_x[:, None] - mo_e_i[None, :])
-        e_ai = -(mo_e_a[:, None] - mo_e_i[None, :])
-        e_xa = -(mo_e_x[:, None] - mo_e_a[None, :])
-
-        self.t1["xi"] = fock_mn[self.t_nmo:, :self.c_nmo].copy()
-        self.t1["xa"] = fock_mn[self.t_nmo:, self.c_nmo:self.t_nmo].copy()
-
-        self.t2["xyab"] = self.eri[self.t_nmo:, self.t_nmo:,
-                        self.c_nmo:self.t_nmo:, self.c_nmo:self.t_nmo].copy()
-        self.t2["xyij"] = self.eri[self.t_nmo:, self.t_nmo:, :self.c_nmo,
-                               :self.c_nmo].copy()
-        self.t2["xyai"] = self.eri[self.t_nmo:, self.t_nmo:,
-                          self.c_nmo:self.t_nmo, :self.c_nmo].copy()
-
-        self.t1["xi"] /= e_xi
-        self.t1["xa"] /= e_xa
-
-        #self.t2["xyab"] /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
-        self.t2["xyij"] /= lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
-        #self.t2["xyai"] /= lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
-        #self.t2["xyij"] *= 0.
-        self.t2["xyab"] *= 0.
-        self.t2["xyai"] *= 0.
-
-
-        return self.t1, self.t2
-
-    def get_f12_amps(self):
-        raise NotImplementedError
-
-    def commute_o1_t(self, o1_mn):
-        """
-        This function assembles the two parts of the commutator
-        [o1, T]=[o1, h1]+[o1, v2] together.
-
-        Args:
-            o1_mn: 2D array of size [nmo, nmo]. The one-body integral to be
-            transformed
-
-        Returns:
-            [ct_o1, ct_v2]: list of two arrays of size [nmo, mno] and [nmo,
-            nmo, nmo, nmo], respectively. The transformed integrals.
-        """
-        # Note get_c1 already symmetrize the transformed integral.
-        ct_o1 = self.get_c1(o1_mn)
-
-        # Note get_c2 has 0 contribution to integrals within the target space.
-        # ct_v2 = self.get_c2(o1_mn)
-
-        return ct_o1
-
-    def get_c1(self, o_mn=None):
-        """
-        This function calculates the commutator between h1_mn and O_px.
-
-        Args:
-            o_mn: a 1-body (2 indices) tensor defined on the parent space
-
-        Returns:
-            c_mn: transformed integral, defined on the parent space
-        """
-        if o_mn is None:
-            o_mn = self.mf.get_hcore()
-            o_mn = self.ao2mo(o_mn)
-        o_mx = o_mn[:, self.t_nmo:]
-        o_mi = o_mn[:, :self.c_nmo]
-        o_ma = o_mn[:, self.c_nmo:self.t_nmo]
-        t_xa = self.t1["xa"]
-        t_xi = self.t1["xi"]
-        # equ (35) in Ref: Phys. Chem. Chem. Phys., 2012, 14, 7809–7820
-        c_mn = np.zeros([self.nmo, self.nmo])
-        # only the following terms are relevant to the target space
-        c_mn[:, self.c_nmo:self.t_nmo] = 2. * lib.einsum("mx, xa -> ma",
-                                                         o_mx, t_xa)
-        c_mn[:, :self.c_nmo] = 2. * lib.einsum("mx, xi -> mi", o_mx, t_xi)
-
-        # connections between target and external space
-        c_mn[:, self.t_nmo:] -= 2. * lib.einsum("ma, xa -> mx", o_ma, t_xa)
-        c_mn[:, self.t_nmo:] -= 2. * lib.einsum("mi, xi -> mx", o_mi, t_xi)
-
-        # need to symmetrize it
-        c_mn += lib.einsum("mn -> nm", c_mn)
-        c_mn /= 2.
-        return c_mn
-
-    def get_c2(self, o_mn=None, only_target=True):
-        """
-        This function computes the [\hat{h}_1, \hat{T}_2]_{1,2}, equ (37) 
-        and (38) in Ref: Phys. Chem. Chem. Phys., 2012, 14, 7809–7820
-
-        Args:
-            o_mn: Rank 2 tensor of size [nao, nao], defined on the parent
-                  basis set
-
-        Returns:
-            ct_eris: Transformed rank 4 tensor defined on the parent basis set.
-        """
-        ct_eris = _PhysicistsERIs()
-        o_xa = o_mn[self.t_nmo:, self.c_nmo:self.t_nmo]
-        o_xi = o_mn[self.t_nmo:, :self.c_nmo]
-        # o_xy = o_mn[self.t_nmo:, self.c_nmo:self.t_nmo]
-        # o_ab = o_mn[self.c_nmo:self.t_nmo:, i
-        #            self.c_nmo:self.t_nmo]
-        # o_ai = o_mn[self.c_nmo:self.t_nmo:, :self.c_nmo]
-
-        if only_target:
-            return
-
-        # Connections to external space are currently not fully implemented.
-        ct_eris.oove = 4 * lib.einsum("xa, xyij -> ijax", o_xa, self.t2["xyij"])
-        ct_eris.vvoe = 4 * lib.einsum("xi, xyab -> abiy", o_xi, self.t2["xyab"])
-        ct_eris.vvve = 4 * lib.einsum("xc, xyab -> abcy", o_xa, self.t2["xyab"])
-        ct_eris.oooe = 4 * lib.einsum("ak, xyij -> ijkx", o_xi, self.t2["xyij"])
-        ct_eris.oove = 4 * lib.einsum("ab, xyij -> ijax", o_xa, self.t2["xyij"])
-        ct_eris.vvoe = 4 * lib.einsum("ai, xyab -> abiy", o_xi, self.t2["xyab"])
-        ct_eris.vvve = 4 * lib.einsum("ac, xyab -> abcy", o_xa, self.t2["xyab"])
-
-        return ct_eris
-
-    def get_c2_prime(self, v2=None):
-        """
-        This function computes the CT contirubtion [v2, t1].
-        Only contribution to the target space is implemented. Connections
-        between target and external space, or that within external space
-        are currently not implemented.
-
-        Args:
-            v2: rank 4 tensor (ndarray). Specify which 2-body operator to
-                commute with the T1 operator. If not supplied, the default is
-                the Coulomb eri.
-        Returns:
-            c2_prime: rank 4 tensor. 
-        
-        """
-        if v2 is None:
-            v2 = self.eri
-        c2_prime = np.zeros(v2.shape)
-        v2_ooeo = v2[:self.c_nmo, :self.c_nmo, self.t_nmo:, :self.c_nmo]
-        oooo = 4. * lib.einsum("ijxl, xk -> ijkl", v2_ooeo, self.t1["xi"])
-        c2_prime[:self.c_nmo, :self.c_nmo, :self.c_nmo:, :self.c_nmo] = oooo
-
-        v2_oveo = v2[:self.c_nmo, self.c_nmo:self.t_nmo, self.t_nmo:, :self.c_nmo]
-        ovoo = 4. * lib.einsum("iaxk, xj -> iajk", v2_oveo, self.t1["xi"])
-        c2_prime[:self.c_nmo, self.c_nmo:self.t_nmo, :self.c_nmo,
-                 :self.c_nmo] = ovoo
-
-        v2_ooev = v2[:self.c_nmo, :self.c_nmo, self.t_nmo:, self.c_nmo:self.t_nmo]
-        oovv = 4. * lib.einsum("ijxb, xa -> ijab", v2_ooev, self.t1["xa"])
-        c2_prime[:self.c_nmo, :self.c_nmo, self.c_nmo:self.t_nmo,
-                 self.c_nmo:self.t_nmo] = oovv
-
-        v2_oveo = v2[:self.c_nmo, self.c_nmo:self.t_nmo, self.t_nmo:, :self.c_nmo]
-        ovvo = 4. * lib.einsum("iaxj, xb -> iabj", v2_oveo, self.t1["xa"])
-        c2_prime[:self.c_nmo, self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo,
-                 :self.c_nmo] = ovvo
-
-        v2_ovev = v2[:self.c_nmo, self.c_nmo:self.t_nmo, self.t_nmo:,
-                  self.c_nmo:self.t_nmo]
-        ovov = 4. * lib.einsum("iaxb, xj -> iajb", v2_ovev, self.t1["xi"])
-        c2_prime[:self.c_nmo, self.c_nmo:self.t_nmo, :self.c_nmo,
-                 self.c_nmo:self.t_nmo] = ovov
-        ovvv = 4. * lib.einsum("iaxc, xb -> iabc", v2_ovev, self.t1["xa"])
-        c2_prime[:self.c_nmo, self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo,
-                 self.c_nmo:self.t_nmo] = ovvv
-
-        v2_vvev = v2[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo, self.t_nmo:,
-                     self.c_nmo:self.t_nmo]
-        vvvv = 4. * lib.einsum("abxd, xc -> abcd", v2_vvev, self.t1["xa"])
-        c2_prime[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo,
-                 self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo] = vvvv
-
-        return c2_prime
-
-    def get_c0(self, dm1=None, dm2=None):
-        """
-        Calculate the constant contribution to energy from CT.
-        """
-
-        if dm1 is None:
-            dm1 = self.dm1
-        if dm2 is None:
-            dm2 = self.dm2
-
-        # construct Do^{p1p2e2}_{a1q2a2}
-        dm2 = get_d_zero(dm1, dm2)
-
-        # need a slice of the full ERI
-        v_mnxu = self.eri[:, :, self.t_nmo:, :]
-        slices = [0, self.nmo, 0, self.nmo, self.t_nmo, self.nmo,
-                  0, self.t_nmo, 0, self.nmo, 0, self.t_nmo]
-        d3 = get_d3_slice(dm1, dm2, slices)
-        t2 = self._t2s
-        c0 = 2.0 * lib.einsum("mnxu, xypq, mnypuq ->", v_mnxu, t2,
-                              d3)
-        v_mnpu = self.eri[:, :, :self.t_nmo, :]
-        slices = [0, self.nmo, 0, self.nmo, 0, self.t_nmo,
-                  self.t_nmo, self.nmo, 0, self.nmo, self.t_nmo,
-                  self.nmo]
-        d3 = get_d3_slice(dm1, dm2, slices)
-        c0 -= 2.0 * lib.einsum("mnpu, xyqr, mnrxuy ->", v_mnpu, t2,
-                               d3)
-
-        return c0
-
-    def get_c1_prime(self, dm2_bar):
-        """
-        Function to compute the 2D tensor associated with the 1-body operator
-        generated by [h2, T2]
-
-        Args:
-            dm2_bar: 4D tensor. As defined in equation (19) in Ref:
-            Phys. Chem. Chem. Phys., 2012, 14, 7809–7820
-
-        Returns:
-            c1_prime_mn: 2D tensor. The 1-body contribution from [h2, T2]
-        """
-
-        # need the original t2
-        t2 = self._t2s
-        # second term in 46b
-        dm2_bar_xipj = dm2_bar[self.t_nmo:, :self.c_nmo, :self.t_nmo,
-                       :self.c_nmo]
-        s1_xipj = -1. / 2 * lib.einsum("xypq, xipj -> yiqj", t2,
-                                       dm2_bar_xipj)
-        dm2_bar_xijp = dm2_bar[self.t_nmo:, :self.c_nmo,
-                       :self.c_nmo, :self.t_nmo]
-        # first term in 46b
-        s1_xipj -= 1. / 2 * lib.einsum("xyqp, xijp -> yiqj", t2,
-                                       dm2_bar_xijp)
-
-        # constructing s2
-        dm2_bar_iypq = dm2_bar[:self.c_nmo, self.t_nmo:,
-                       :self.t_nmo, :self.t_nmo]
-        s2_xi = lib.einsum("xypq, iypq -> xi", t2, dm2_bar_iypq)
-
-        # constructing s3
-        dm2_bar_ipxy = dm2_bar[:self.c_nmo, :self.t_nmo,
-                       self.t_nmo:, self.t_nmo:]
-        s3_ip = lib.einsum("xypq, iqxy -> ip", t2, dm2_bar_ipxy)
-
-        # constructing s4
-        dm2_bar_ijpq = dm2_bar[:self.c_nmo, :self.c_nmo,
-                       :self.t_nmo, :self.t_nmo]
-        s4_xyij = 1. / 2 * lib.einsum("xypq, ijpq -> xyij", t2, dm2_bar_ijpq)
-
-        # constructing s5
-        dm2_bar_ijxy = dm2_bar[:self.c_nmo, :self.c_nmo,
-                       self.t_nmo:, self.t_nmo:]
-        s5_ijpq = 1. / 2 * lib.einsum("xypq, ijxy -> ijpq", t2, dm2_bar_ijxy)
-
-        # s6
-        # TODO: This contraction is very heavy. Need optimization!!
-        s6_mn = lib.einsum("mnuv, wnuv -> wm", self.eri, dm2_bar)
-        s6_px = s6_mn[:self.t_nmo, self.t_nmo:]
-        s6_xp = s6_mn[self.t_nmo:, :self.t_nmo]
-
-        # s0
-        s0_xipj = lib.einsum("xypq, xipj -> yiqj", t2, dm2_bar_xipj)
-        s0_xipj -= 1./2 * lib.einsum("xyqp, xipj -> yiqj", t2, dm2_bar_xipj)
-
-        # constructing c1_prime
-        c1_prime_mn = np.zeros([self.nmo, self.nmo])
-        # adding contributions from e1_prime_pq
-        # first term in equation 44
-        v_mixj = self.eri[:, :self.c_nmo, self.t_nmo:,
-                 :self.c_nmo]
-        v_mijx = self.eri[:, :self.c_nmo, :self.c_nmo,
-                 self.t_nmo:]
-        c1_prime_mn[:, :self.t_nmo] -= lib.einsum("mixj, xipj -> mp", v_mixj,
-                                                  s0_xipj)
-        c1_prime_mn[:, :self.t_nmo] -= lib.einsum("mijx, xipj -> mp", v_mijx,
-                                                  s1_xipj)
-
-        # second term in equation 44
-        v_minx = self.eri[:, :self.c_nmo, :, self.t_nmo:].copy()
-        v_minx -= 1. / 2 * self.eri[:, :self.c_nmo, self.t_nmo:,
-                           :].transpose(0, 1, 3, 2)
-        c1_prime_mn -= lib.einsum("minx, xi -> mn", v_minx, s2_xi)
-
-        # third term in equation 44
-        v_ijxm = self.eri[:self.c_nmo, :self.c_nmo,
-                 self.t_nmo:, :]
-        c1_prime_mn[:, self.t_nmo:] += lib.einsum("ijxm, xyij -> my",
-                                                  v_ijxm, s4_xyij)
-
-        # fourth term in equation 44
-        # Note that s6_px has none zero values in block ap, but it does not
-        # contribute to e1_prime_pq, since in the end it contracts with the
-        # t2 amplitudes which have only none zero in block xypq.
-        c1_prime_mn[:self.t_nmo, self.t_nmo:] -= \
-            lib.einsum("xypq, qy -> px", t2, s6_px)
-
-        # adding contributions from a1_prime_pq, note that the overall sign is -
-        # first term in equation 45
-        v_mipj = self.eri[:, :self.c_nmo, :self.t_nmo, :self.c_nmo]
-        v_mijp = self.eri[:, :self.c_nmo, :self.c_nmo, :self.t_nmo]
-        c1_prime_mn[:, self.t_nmo:] += lib.einsum("mipj, xipj -> mx",
-                                                  v_mipj, s0_xipj)
-        c1_prime_mn[:, self.t_nmo:] += lib.einsum("mijp, xipj -> mx",
-                                                  v_mijp, s1_xipj)
-
-        # second term in equation 45
-        v_minp = self.eri[:, :self.c_nmo, :, :self.t_nmo].copy()
-        v_mipn = self.eri[:, :self.c_nmo, :self.t_nmo, :]
-        v_minp -= 1. / 2 * v_mipn.transpose((0, 1, 3, 2))
-        c1_prime_mn += lib.einsum("minp, ip -> mn", v_minp, s3_ip)
-
-        # third term in equation 45
-        v_ijpm = self.eri[:self.c_nmo, :self.c_nmo, :self.t_nmo, :]
-        c1_prime_mn[:, :self.t_nmo] -= lib.einsum("ijpm, ijpq -> mq",
-                                                  v_ijpm, s5_ijpq)
-
-        # fourth term in equation 45
-        c1_prime_mn[:self.t_nmo, self.t_nmo:] += \
-            lib.einsum("xypq, yq -> px", t2, s6_xp)
-
-        c1_prime_mn *= 2.
-
-        return c1_prime_mn
-
-    def get_c2_dprime(self, dm1=None):
-        """
-        Function to construct c_double_prime_mnuv, Eq (47)
-        Args:
-            dm1: 2D tensor. 1-RDM
-
-        Returns:
-            c2_dprime_mnuv: 4D tensor.
-        """
-
-        # Construct T0-T3 intermediates first.
-        t2 = self._t2s
-        cap_t0_xyip = lib.einsum("xypq, ip -> xyiq", t2, dm1[:self.c_nmo,
-                                                         :self.t_nmo])
-        cap_t1_ixpq = lib.einsum("xypq, ix -> iypq", t2, dm1[:self.c_nmo,
-                                                         self.t_nmo:])
-        cap_t2_xp = lib.einsum("xypq, xp -> yq", t2, dm1[self.t_nmo:,
-                                                     :self.t_nmo])
-        cap_t2_xp -= 1. / 2 * lib.einsum("yxqp, xp -> yq", t2,
-                                         dm1[self.t_nmo:,
-                                         :self.t_nmo])
-        cap_t3_mn = lib.einsum("mnuv, nv -> mn", self.eri, dm1)
-        cap_t3_mn -= 1. / 2 * lib.einsum("mnvu, nv -> mv", self.eri, dm1)
-
-        c2_dprime_mnuv = np.zeros([self.nmo, self.nmo, self.nmo,
-                                   self.nmo])
-
-        # adding e_dprime_mnuv contribution
-        # TODO: the on-the-fly slicing is not the most efficient way, fix it
-        # first term in equation 48
-        v_mnxy = self.eri[:, :, self.t_nmo:, self.t_nmo:]
-        c2_dprime_mnuv[:, :, :self.t_nmo, :self.t_nmo] += \
-            1. / 2 * lib.einsum("mnxy, xypq -> mnpq", v_mnxy, t2)
-        # second term in equ 48
-        v_mxni = self.eri[:, self.t_nmo:, :, :self.c_nmo]
-        c2_dprime_mnuv[:, :self.t_nmo, :, self.t_nmo:] += \
-            lib.einsum("mxni, xyip -> mpny", v_mxni, cap_t0_xyip)
-        c2_dprime_mnuv[:, :self.t_nmo, :, self.t_nmo:] -= \
-            1. / 2 * lib.einsum("mxni, yxip -> mpny", v_mxni, cap_t0_xyip)
-        v_mxin = self.eri[:, self.t_nmo:, :self.c_nmo, :]
-        c2_dprime_mnuv[:, :self.t_nmo, :, self.t_nmo:] -= \
-            1. / 2 * lib.einsum("mxin, xyip -> mpny", v_mxin, cap_t0_xyip)
-        # third term in equ 48
-        c2_dprime_mnuv[:, :self.t_nmo, self.t_nmo:, :] -= \
-            1. / 2 * lib.einsum("mxin, yxip -> mpxn", v_mxin, cap_t0_xyip)
-
-        # fourth term in equ 48
-        v_mnxi = self.eri[:, :, self.t_nmo:, :self.c_nmo]
-        c2_dprime_mnuv[:, :, :self.t_nmo, :self.t_nmo] -= \
-            1. / 2 * lib.einsum("mnxi, ixpq -> mnqp", v_mnxi, cap_t1_ixpq)
-
-        # fifth term in equ 48
-        v_mnxu = self.eri[:, :, self.t_nmo:, :]
-        c2_dprime_mnuv[:, :, :self.t_nmo, :] += \
-            lib.einsum("mnxu, xp -> mnpu", v_mnxu, cap_t2_xp)
-
-        # sixth term in equ 48
-        c2_dprime_mnuv[:, self.t_nmo:, :self.t_nmo,
-        :self.t_nmo] += lib.einsum("xypq, mx -> mypq", t2,
-                                   cap_t3_mn[:, self.t_nmo:])
-
-        # adding contributions from a_dprime_mnuv, notice the overall - sign
-        v_mnpq = self.eri[:, :, :self.t_nmo, :self.t_nmo]
-        c2_dprime_mnuv[:, :, self.t_nmo:, self.t_nmo:] += \
-            1. / 2 * lib.einsum("mnpq, xypq -> mnxy", v_mnpq, t2)
-        # second term in equ 49
-        v_mpni = self.eri[:, :self.t_nmo, :, :self.c_nmo]
-        c2_dprime_mnuv[:, self.t_nmo:, :, :self.t_nmo] += \
-            lib.einsum("mpni, ixpq -> mxnq", v_mpni, cap_t1_ixpq)
-        c2_dprime_mnuv[:, self.t_nmo:, :, :self.t_nmo] -= \
-            1. / 2 * lib.einsum("mpni, ixpq -> mxnq", v_mpni, cap_t1_ixpq)
-        v_mpin = self.eri[:, :self.t_nmo, :self.c_nmo, :]
-        c2_dprime_mnuv[:, self.t_nmo:, :, :self.t_nmo] -= \
-            1. / 2 * lib.einsum("mpin, ixpq -> mxnq", v_mpin, cap_t1_ixpq)
-
-        # third term in equ 49
-        c2_dprime_mnuv[:, self.t_nmo:, :self.t_nmo, :] -= \
-            1. / 2 * lib.einsum("mpin, ixqp -> mxqn", v_mpin, cap_t1_ixpq)
-
-        # fourth term in equ 49
-        v_mnpi = self.eri[:, :, :self.t_nmo, :self.c_nmo]
-        c2_dprime_mnuv[:, :, self.t_nmo:, self.t_nmo:] -= \
-            1. / 2 * lib.einsum("mnpi, xyip -> mnyx", v_mnpi, cap_t0_xyip)
-
-        # fifth term in equ 49
-        v_mnpu = self.eri[:, :, :self.t_nmo, :]
-        c2_dprime_mnuv[:, :, self.t_nmo:, :] += \
-            lib.einsum("mnpu, xp -> mnxu", v_mnpu, cap_t2_xp)
-
-        # sixth term in equ 49
-        c2_dprime_mnuv[:, :self.t_nmo, self.t_nmo:,
-        self.t_nmo:] += lib.einsum("xypq, mp -> mqxy", t2,
-                                   cap_t3_mn[:, :self.t_nmo])
-
-        c2_dprime_mnuv *= 4.
-        return c2_dprime_mnuv
-
-    def get_hf_energy(self, c0=None, c1=None, c2=None):
-        if c0 is None:
-            c0 = self.ct_0
-        if c1 is None:
-            c1 = self.ct_h1
-        if c2 is None:
-            c2 = self.ct_v2
-
-        e_hf = 2. * lib.einsum("ii -> ", c1[:self.c_nmo, :self.c_nmo])
-        e_hf += 2. * lib.einsum("ijij -> ", c2[:self.c_nmo, :self.c_nmo,
-                                             :self.c_nmo, :self.c_nmo])
-        e_hf -= lib.einsum("ijji -> ", c2[:self.c_nmo, :self.c_nmo,
-                                            :self.c_nmo, :self.c_nmo])
-        e_hf += c0
-        e_hf += self.mf.energy_nuc()
-        return e_hf
-
-    @property
-    def mo_energy(self):
-        if self._mo_energy is None:
-            mo_energy = self.get_mo_energy()
-            self._mo_energy = mo_energy.copy()
-        return mo_energy
-
-    @mo_energy.setter
-    def mo_energy(self, value):
-        self._mo_energy = value
 
     def get_mo_energy(self):
         mo_energy = self.ct_h1.copy()
