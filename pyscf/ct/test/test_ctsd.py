@@ -192,7 +192,8 @@ class KnownValues(unittest.TestCase):
 
     def test_ct_mp2(self):
         #mf = scf.RHF(mol).run()
-        mp2_e = mp.MP2(mf).run()
+        mymp = mp.MP2(mf).run()
+        mp2_total = mymp.e_tot
         myct.amps_algo = "mp2"
         c0, c1, c2 = myct.kernel()
         ct_hf_e = myct.get_hf_energy(c0, c1, c2)
@@ -211,6 +212,7 @@ class KnownValues(unittest.TestCase):
         ct_mp2_total = ct_hf_e + ct_mp2_e
         print("CT MP2 corr = ", ct_mp2_e)
         print("CT MP2 total = ", ct_mp2_total)
+        self.assertAlmostEqual(ct_mp2_total, mp2_total, 8)
 
 
 
