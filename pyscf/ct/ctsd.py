@@ -365,7 +365,6 @@ class CTSD(lib.StreamObject):
         mo_e_x = self.mf.mo_energy[self.t_nmo:]
 
         e_xi = -(mo_e_x[:, None] - mo_e_i[None, :])
-        e_ai = -(mo_e_a[:, None] - mo_e_i[None, :])
         e_xa = -(mo_e_x[:, None] - mo_e_a[None, :])
 
         self.t1["xi"] = fock_mn[self.t_nmo:, :self.c_nmo].copy()
@@ -381,12 +380,9 @@ class CTSD(lib.StreamObject):
         self.t1["xi"] /= e_xi
         self.t1["xa"] /= e_xa
 
-        #self.t2["xyab"] /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
+        self.t2["xyab"] /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
         self.t2["xyij"] /= lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
-        #self.t2["xyai"] /= lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
-        #self.t2["xyij"] *= 0.
-        self.t2["xyab"] *= 0.
-        self.t2["xyai"] *= 0.
+        self.t2["xyai"] /= lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
 
 
         return self.t1, self.t2
