@@ -20,6 +20,7 @@ import numpy as np
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf.ct import ctsd
+from pyscf.ct.ctsd import symmetrize
 from pyscf.pbc import scf
 from pyscf.pbc.lib import kpts_helper
 from pyscf.pbc.cc.kccsd_rhf import _get_epq
@@ -27,7 +28,6 @@ from pyscf.pbc.mp.kmp2 import (get_frozen_mask, get_nocc, get_nmo,
                                padded_mo_coeff, padding_k_idx)  # noqa
 
 
-kernel = pyscf.ct.ctsd.kernel
 
 class RCTSD(ctsd.CTSD):
     """
@@ -98,7 +98,82 @@ class RCTSD(ctsd.CTSD):
 
     get_mp2_amps = get_mp2_amps
 
-    def commute(self):
+    def kernel(self, t1=None, t2=None, eri=None, amps_algo='mp2'):
+        if t1 is None and t2 is None:
+            self.amps_algo = amps_algo
+            t1, t2 = self.init_amps()
+        elif t2 is None:
+            t2 = self.init_amps()[1]
+        
+        if eri is None:
+            self.eri = self.ao2mo()
+
+        ct_0, ct_h1, ct_v2 = self.commute(h1=h_mn, v2=self.eri)
+
+    def commute(self, o0=0., o1=None, o2=None):
         """commutation operator. Needs to take the k-conservation into account.
         """
+        c1 = None
+        c2 = None
+        c0 = o0
+        if o1 is not None:
+            c1, c2 = self.commute_o1_t(o1)
+        if o2 is not None:
+            c0, c1_prime, c2_prime, c2_dprime = self.commute_o2_t(o2)
+            c1 += c1_prime
+            c2 += c2_prime + c2_dprime
+        
+        if c1 is not None:
+            c1 = symmetrize(c1)
+        if c2 is not None:
+            c2 = symmetrize(c2)
+
+        return c0, c1, c2
+
+    def commute_o1_t(self, o1, t1, t2):
+        ct_o1 = self.get_k_c1(o1, t1)
+        ct_o2 = self.get_k_c2(o1, t2)
+
+        return ct_o1, ct_o2
+    
+    def get_k_c1(self, o1, t1):
+        c1_kmn = np.zeros(o1.shape)
+        for ki in range(self.nkpts):
+            o1_mn = o1[ki].copy
+            c1_kmn[ki] = self.get_c1(o1_mn, t1=t1[ki])
+        
+        return c1_kmn
+        
+    def get_k_c2(self, o1, t2):
+        c2 = np.empty(t2.shape)
+        kconserv = self.khelper.kconserv
+        touched = np.zeros((self.nkpts, self.nkpts, self.nkpts), dtype=bool)
+
+        for ki, kj, ka in kpts_helper.loop_kkk(self.nkpts):
+            if touched[ki, kj, ka]:
+                continue
+            kb = kconserv[ki, ka, kj]
+            o_mx = o1[ki, :, self.t_nmo:]
+            o_mp = o1[ka, :, :self.t_nmo]
+            c2_kikjka = 4.*lib.einsum(
+                "mx, nypq -> mypq", o_mx, t2[ki, kj, ka]
+            )
+            c2_kakbki = -4.*lib.einsum(
+                "mp, xypq -> mqxy", o_mp, t2[ki, kj, ka]
+            )
+            c2[ki, kj, ka, self.t_nmo:, :self.t_nmo, :self.t_nmo] = c2_kikjka
+            c2[ka, kb, ki, :self.t_nmo, self.t_nmo:, self.t_nmo:] = c2_kakbki
+
+        return c2
+
+    def commute_o2_t(self, v2):
         pass
+
+    class _ERIS:
+        def __init__(self, ct, method='incore'):
+            cell = ct._scf.cell
+            kpts = ct.kpts
+            nkpts = ct.nkpts
+            nocc = ct.nocc
+            nmo = ct.nmo
+            nvir = nmo - nocc
