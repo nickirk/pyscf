@@ -151,23 +151,6 @@ class KnownValues(unittest.TestCase):
         ct_0 = myct.get_c0()
         assert ct_0 == 0.
 
-    def test_get_c1(self):
-        pass
-
-    def test_get_c1_prime(self):
-        pass
-
-    def test_get_c2(self):
-        pass
-
-    def test_get_c2_prime(self):
-        pass
-    def test_get_c2_dprime(self):
-        pass
-    def test_ct(self):
-        mf = scf.ROHF(mol).run()
-        #myct = ct.ctsd.CTSD(mf).run()
-
     def test_get_hf_energy(self):
         # if the CT amplitudes are 0, then the transformation has no effect,
         # one should get the original HF energy and mo_energy

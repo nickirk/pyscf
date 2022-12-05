@@ -335,6 +335,7 @@ class CTSD(lib.StreamObject):
 
     def get_amps(self):
         if self._amps_algo == "mp2" or self._amps_algo is None:
+            self._amps_algo = 'mp2'
             return self.get_mp2_amps()
         elif self._amps_algo == "zero":
             return self.get_zero_amps()
@@ -852,6 +853,16 @@ class CTSD(lib.StreamObject):
         e_hf += c0
         e_hf += self.mf.energy_nuc()
         return e_hf
+    
+    def get_fock(self, c1=None, c2=None):
+        if c1 is None:
+            c1 = self.ct_o1
+        if c2 is None:
+            c2 = self.ct_o2
+        fock = c1.copy()
+        fock += 2.*lib.einsum("piqi -> pq", c2[:, :self.n_occ, :, :self.n_occ])
+        fock -= lib.einsum("piiq -> pq", c2[:, :self.n_occ, :self.n_occ, :])
+        return fock
 
     @property
     def mo_energy(self):
@@ -974,6 +985,27 @@ class CTSD(lib.StreamObject):
         mo_energy = mo_energy.diagonal()
         return mo_energy
 
+    
+    def create_eris(self, eris=None, c2=None):
+        #eris = mycc.ao2mo()
+        if c2 is None:
+            c2 = self.c2
+        nocc = self.nocc
+        nvir = self.nmo - nocc
+        eris.fock = self.get_fock()
+        eris.e_hf = self.get_hf_energy()
+        eris.oooo = self.c2[:nocc, :nocc, :nocc, :nocc].transpose(0, 2, 1, 3)
+        eris.ovoo = self.c2[:nocc, :nocc, nocc:, :nocc].transpose(0, 2, 1, 3)
+        eris.oovv = self.c2[:nocc, nocc:, :nocc, nocc:].transpose(0, 2, 1, 3)
+        eris.ovvo = self.c2[:nocc, nocc:, nocc:, :nocc].transpose(0, 2, 1, 3)
+        eris.ovov = self.c2[:nocc, :nocc, nocc:, nocc:].transpose(0, 2, 1, 3)
+        eris.ovvv = self.c2[:nocc, nocc:, nocc:, nocc:].transpose(0, 2, 1, 3)
+        eris.vvvv = self.c2[nocc:, nocc:, nocc:, nocc:].transpose(0, 2, 1, 3)
+        eris.ovvv = lib.pack_tril(eris.ovvv.reshape(-1,nvir,nvir)).reshape(nocc,nvir,-1)
+        eris.vvvv = ao2mo.restore(4, eris.vvvv, nvir)
+
+        return eris
+
 
 class _PhysicistsERIs:
     """
@@ -1063,70 +1095,3 @@ class _PhysicistsERIs:
     #    ovvv = lib.unpack_tril(ovw.reshape(n_occ * n_vir, n_vir_pair))
     #    n_vir1 = ovvv.shape[2]
     #    return ovvv.reshape(n_occ, n_vir, n_vir1, n_vir1)
-
-    def symmetrize(self):
-        """
-        This function symmetrize CT 2-body intermediates.
-        Needs oooo, ovoo, vooo, ooov, oovo, oovv, vvoo, ovvo, voov, ovov,
-        vovo, ovvv, vovv, vvov, vvvo
-
-        """
-        # TODO: oooo partition should already be symmetric: should check if
-        #  indeed
-        #  is true
-        oooo_orig = self.oooo.copy()
-        self.oooo += np.transpose(oooo_orig, (1, 0, 3, 2))
-        self.oooo += np.transpose(oooo_orig, (2, 3, 0, 1))
-        self.oooo += np.transpose(oooo_orig, (3, 2, 1, 0))
-        self.oooo /= 4.
-
-        # ovoo: 1/4(ovoo + vooo + ooov + oovo)
-        self.ovoo += np.transpose(self.vooo, (1, 0, 3, 2))
-        self.ovoo += np.transpose(self.ooov, (2, 3, 0, 1))
-        self.ovoo += np.transpose(self.oovo, (3, 2, 1, 0))
-        self.ovoo /= 4.
-
-        self.vooo = self.ooov = self.oovo = self.ovoo
-
-        # oovv: 1/4(oovv + oovv + vvoo + vvoo)
-        self.oovv += np.transpose(self.oovv, (1, 0, 3, 2))
-        self.oovv += np.transpose(self.vvoo, (2, 3, 0, 1))
-        self.oovv += np.transpose(self.vvoo, (3, 2, 1, 0))
-        self.oovv /= 4.
-
-        self.vvoo = self.oovv
-
-        # ovvo: 1/4(ovvo + voov + voov + ovvo)
-        self.ovvo += np.transpose(self.ovvo, (3, 2, 1, 0))
-        self.ovvo += np.transpose(self.voov, (1, 0, 3, 2))
-        self.ovvo += np.transpose(self.voov, (2, 3, 0, 1))
-        self.ovvo /= 4.
-
-        self.voov = self.ovvo
-
-        # ovov: 1/4(ovov + vovo + ovov + vovo)
-        self.ovov += np.transpose(self.ovov, (3, 2, 1, 0))
-        self.ovov += np.transpose(self.vovo, (1, 0, 3, 2))
-        self.ovov += np.transpose(self.vovo, (2, 3, 0, 1))
-        self.ovov /= 4.
-
-        self.vovo = self.ovov
-
-        # ovvv: 1/4(ovvv + vovv + vvov + vvvo)
-        self.ovvv += np.transpose(self.vovv, (1, 0, 3, 2))
-        self.ovvv += np.transpose(self.vvov, (2, 3, 0, 1))
-        self.ovvv += np.transpose(self.vvvo, (3, 2, 1, 0))
-        self.ovvv /= 4.
-
-        self.vovv = self.vvov = self.vvvo = self.ovvv
-
-        # vvvv: vvvv
-        # really need to verify if the following is necessary, because for
-        # large number of orbitals, the following operations are expensive.
-        vvvv_orig = self.vvvv.copy()
-        self.vvvv += np.transpose(vvvv_orig, (1, 0, 3, 2))
-        self.vvvv += np.transpose(vvvv_orig, (2, 3, 0, 1))
-        self.vvvv += np.transpose(vvvv_orig, (3, 2, 1, 0))
-        self.vvvv /= 4.
-
-        return
