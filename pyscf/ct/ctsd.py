@@ -29,6 +29,7 @@ from pyscf import lib
 from pyscf.lib import logger
 from pyscf import ao2mo
 from functools import reduce
+from pyscf.cc.ccsd import _ChemistsERIs
 
 def symmetrize(t):
     """This function symmetrizes tensor t of dim 2 or 4.
@@ -987,10 +988,13 @@ class CTSD(lib.StreamObject):
 
     
     def create_eris(self, eris=None, c2=None):
-        #eris = mycc.ao2mo()
+        if eris is None:
+            eris = _ChemistsERIs()
         if c2 is None:
             c2 = self.c2
         nocc = self.nocc
+        eris.nocc = nocc
+        eris.mol = self.mol
         nvir = self.nmo - nocc
         eris.fock = self.get_fock()
         eris.e_hf = self.get_hf_energy()
