@@ -228,7 +228,7 @@ class CTSD(lib.StreamObject):
         self._t2s = np.zeros([self.e_nmo, self.e_nmo, self.t_nmo, self.t_nmo])
         self._t1s = np.zeros([self.e_nmo, self.t_nmo])
         self.t1, self.t2 = self.part_amps()
-        self._n_occ = None
+        self._nocc = None
         self._nmo = None
         self._amps_algo = None
         self.chkfile = mf.chkfile
@@ -861,8 +861,8 @@ class CTSD(lib.StreamObject):
         if c2 is None:
             c2 = self.ct_o2
         fock = c1.copy()
-        fock += 2.*lib.einsum("piqi -> pq", c2[:, :self.n_occ, :, :self.n_occ])
-        fock -= lib.einsum("piiq -> pq", c2[:, :self.n_occ, :self.n_occ, :])
+        fock += 2.*lib.einsum("piqi -> pq", c2[:, :self.nocc, :, :self.nocc])
+        fock -= lib.einsum("piiq -> pq", c2[:, :self.nocc, :self.nocc, :])
         return fock
 
     @property
@@ -912,13 +912,13 @@ class CTSD(lib.StreamObject):
             raise NotImplementedError
 
     @property
-    def n_occ(self):
-        if self._n_occ is None:
-            self._n_occ = np.count_nonzero(self.mf.mo_occ)
-        return self._n_occ
-    @n_occ.setter
-    def n_occ(self, nocc):
-        self._n_occ = nocc
+    def nocc(self):
+        if self._nocc is None:
+            self._nocc = np.count_nonzero(self.mf.mo_occ)
+        return self._nocc
+    @nocc.setter
+    def nocc(self, nocc):
+        self._nocc = nocc
 
     @property
     def t2s(self):
@@ -991,20 +991,20 @@ class CTSD(lib.StreamObject):
         if eris is None:
             eris = _ChemistsERIs()
         if c2 is None:
-            c2 = self.c2
+            c2 = self.ct_o2
         nocc = self.nocc
         eris.nocc = nocc
         eris.mol = self.mol
         nvir = self.nmo - nocc
         eris.fock = self.get_fock()
         eris.e_hf = self.get_hf_energy()
-        eris.oooo = self.c2[:nocc, :nocc, :nocc, :nocc].transpose(0, 2, 1, 3)
-        eris.ovoo = self.c2[:nocc, :nocc, nocc:, :nocc].transpose(0, 2, 1, 3)
-        eris.oovv = self.c2[:nocc, nocc:, :nocc, nocc:].transpose(0, 2, 1, 3)
-        eris.ovvo = self.c2[:nocc, nocc:, nocc:, :nocc].transpose(0, 2, 1, 3)
-        eris.ovov = self.c2[:nocc, :nocc, nocc:, nocc:].transpose(0, 2, 1, 3)
-        eris.ovvv = self.c2[:nocc, nocc:, nocc:, nocc:].transpose(0, 2, 1, 3)
-        eris.vvvv = self.c2[nocc:, nocc:, nocc:, nocc:].transpose(0, 2, 1, 3)
+        eris.oooo = c2[:nocc, :nocc, :nocc, :nocc].transpose(0, 2, 1, 3)
+        eris.ovoo = c2[:nocc, :nocc, nocc:, :nocc].transpose(0, 2, 1, 3)
+        eris.oovv = c2[:nocc, nocc:, :nocc, nocc:].transpose(0, 2, 1, 3)
+        eris.ovvo = c2[:nocc, nocc:, nocc:, :nocc].transpose(0, 2, 1, 3)
+        eris.ovov = c2[:nocc, :nocc, nocc:, nocc:].transpose(0, 2, 1, 3)
+        eris.ovvv = c2[:nocc, nocc:, nocc:, nocc:].transpose(0, 2, 1, 3)
+        eris.vvvv = c2[nocc:, nocc:, nocc:, nocc:].transpose(0, 2, 1, 3)
         eris.ovvv = lib.pack_tril(eris.ovvv.reshape(-1,nvir,nvir)).reshape(nocc,nvir,-1)
         eris.vvvv = ao2mo.restore(4, eris.vvvv, nvir)
 
@@ -1024,7 +1024,7 @@ class _PhysicistsERIs:
     def __init__(self, mol=None):
         self.mol = mol
         self.mo_coeff = None
-        self.n_occ = None
+        self.nocc = None
         self.fock_mn = None
         self.e_hf = None
 
@@ -1075,7 +1075,7 @@ class _PhysicistsERIs:
         fock_ao = ct.mf.get_fock()
         self.fock = reduce(np.dot, (mo_coeff.conj().T, fock_ao, mo_coeff))
         # self.e_hf = ct.mf.energy_tot(dm=dm, vhf=vhf)
-        n_occ = self.n_occ
+        nocc = self.nocc
         self.full = self.get_eris_incore(ct)
         return self
 
@@ -1095,7 +1095,7 @@ class _PhysicistsERIs:
     #def get_ovvv(self, *slices):
     #    '''To access a subblock of ovvv tensor'''
     #    ovw = np.asarray(self.ovvv[slices])
-    #    n_occ, n_vir, n_vir_pair = ovw.shape
-    #    ovvv = lib.unpack_tril(ovw.reshape(n_occ * n_vir, n_vir_pair))
-    #    n_vir1 = ovvv.shape[2]
-    #    return ovvv.reshape(n_occ, n_vir, n_vir1, n_vir1)
+    #    nocc, nvir, nvir_pair = ovw.shape
+    #    ovvv = lib.unpack_tril(ovw.reshape(nocc * nvir, nvir_pair))
+    #    nvir1 = ovvv.shape[2]
+    #    return ovvv.reshape(nocc, nvir, nvir1, nvir1)
