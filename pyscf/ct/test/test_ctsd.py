@@ -151,7 +151,7 @@ class KnownValues(unittest.TestCase):
         ct_0 = myct.get_c0()
         assert ct_0 == 0.
 
-    def test_get_hf_energy(self):
+    def test_zero_amp_ct_ref_energy(self):
         # if the CT amplitudes are 0, then the transformation has no effect,
         # one should get the original HF energy and mo_energy
 
@@ -173,7 +173,25 @@ class KnownValues(unittest.TestCase):
         e_hf = mf.e_tot
         self.assertAlmostEqual(e_hf_ct, e_hf, 8)
 
-    def test_ct_mp2(self):
+    def test_get_mo_energy(self):
+        c0, c1, c2 = myct.kernel()
+        ct_hf_e = myct.get_hf_energy(c0, c1, c2)
+        print("CT HF energy = ", ct_hf_e)
+
+        ct_mo_energy = myct.get_mo_energy()
+        fock = myct.get_fock()
+        assert np.allclose(fock.diagonal(), ct_mo_energy)
+
+        hf_e_from_fock = 2. * np.sum(fock[:myct.c_nmo, :myct.c_nmo].diagonal())
+        hf_e_from_fock -= 2. * np.einsum("ijij", c2[:myct.c_nmo, :myct.c_nmo,
+                                             :myct.c_nmo, :myct.c_nmo])
+        hf_e_from_fock += np.einsum("ijji", c2[:myct.c_nmo, :myct.c_nmo,
+                                             :myct.c_nmo, :myct.c_nmo])
+        hf_e_from_fock += mf.energy_nuc()
+        hf_e = myct.get_hf_energy()
+        self.assertAlmostEqual(hf_e, hf_e_from_fock, 8)
+        
+    def test_ct_ref(self):
         #mf = scf.RHF(mol).run()
         mymp = mp.MP2(mf).run()
         mp2_total = mymp.e_tot
@@ -196,6 +214,18 @@ class KnownValues(unittest.TestCase):
         print("CT MP2 corr = ", ct_mp2_e)
         print("CT MP2 total = ", ct_mp2_total)
         self.assertAlmostEqual(ct_mp2_total, mp2_total, 8)
+
+
+    def test_ct_mp2(self):
+        myct.amps_algo = "mp2"
+        c0, c1, c2 = myct.kernel()
+        ct_hf_e = myct.get_hf_energy(c0, c1, c2)
+        print("CT HF energy = ", ct_hf_e)
+        eris = myct.create_eris()
+        mymp = mp.MP2(mf)
+        mymp.kernel(eris=eris)
+        print("CT-MP2 corr = ", mymp.e_corr)
+
 
 
 

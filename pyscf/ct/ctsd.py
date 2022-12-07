@@ -536,6 +536,8 @@ class CTSD(lib.StreamObject):
             c2_prime: rank 4 tensor. 
         
         """
+        #TODO: generalize it to the who space. When singles amp is 0, c2_prime
+        # is also 0. Not used for now.
         if o2 is None:
             o2 = self.eri
         c2_prime = np.zeros(o2.shape)
@@ -701,11 +703,11 @@ class CTSD(lib.StreamObject):
                                                   v_ijxm, s4_xyij)
 
         # fourth term in equation 44
-        # Note that s6_px has none zero values in block ap, but it does not
-        # contribute to e1_prime_pq, since in the end it contracts with the
-        # t2 amplitudes which have only none zero in block xypq.
         c1_prime_mn[:self.t_nmo, self.t_nmo:] -= \
             lib.einsum("xypq, qy -> px", t2, s6_px)
+        
+        c1_prime_mn[:self.t_nmo, self.t_nmo:] += \
+            0.5 * lib.einsum("xyqp, qy -> px", t2, s6_px)
 
         # adding contributions from a1_prime_pq, note that the overall sign is -
         # first term in equation 45
@@ -730,6 +732,8 @@ class CTSD(lib.StreamObject):
         # fourth term in equation 45
         c1_prime_mn[:self.t_nmo, self.t_nmo:] += \
             lib.einsum("xypq, yq -> px", t2, s6_xp)
+        c1_prime_mn[:self.t_nmo, self.t_nmo:] -= \
+            0.5 * lib.einsum("xyqp, yq -> px", t2, s6_xp)
 
         c1_prime_mn *= 2.
 
@@ -759,11 +763,11 @@ class CTSD(lib.StreamObject):
                                                          self.t_nmo:])
         cap_t2_xp = lib.einsum("xypq, xp -> yq", t2, dm1[self.t_nmo:,
                                                      :self.t_nmo])
-        cap_t2_xp -= 1. / 2 * lib.einsum("yxqp, xp -> yq", t2,
+        cap_t2_xp -= 1. / 2 * lib.einsum("xyqp, xp -> yq", t2,
                                          dm1[self.t_nmo:,
                                          :self.t_nmo])
-        cap_t3_mn = lib.einsum("mnuv, nv -> mn", o2, dm1)
-        cap_t3_mn -= 1. / 2 * lib.einsum("mnvu, nv -> mv", o2, dm1)
+        cap_t3_mn = lib.einsum("mnuv, nv -> mu", o2, dm1)
+        cap_t3_mn -= 1. / 2 * lib.einsum("mnvu, nv -> mu", o2, dm1)
 
         c2_dprime_mnuv = np.zeros([self.nmo, self.nmo, self.nmo,
                                    self.nmo])
@@ -804,35 +808,35 @@ class CTSD(lib.StreamObject):
 
         # adding contributions from a_dprime_mnuv, notice the overall - sign
         v_mnpq = o2[:, :, :self.t_nmo, :self.t_nmo]
-        c2_dprime_mnuv[:, :, self.t_nmo:, self.t_nmo:] += \
+        c2_dprime_mnuv[:, :, self.t_nmo:, self.t_nmo:] -= \
             1. / 2 * lib.einsum("mnpq, xypq -> mnxy", v_mnpq, t2)
         # second term in equ 49
         v_mpni = o2[:, :self.t_nmo, :, :self.c_nmo]
-        c2_dprime_mnuv[:, self.t_nmo:, :, :self.t_nmo] += \
-            lib.einsum("mpni, ixpq -> mxnq", v_mpni, cap_t1_ixpq)
         c2_dprime_mnuv[:, self.t_nmo:, :, :self.t_nmo] -= \
+            lib.einsum("mpni, ixpq -> mxnq", v_mpni, cap_t1_ixpq)
+        c2_dprime_mnuv[:, self.t_nmo:, :, :self.t_nmo] += \
             1. / 2 * lib.einsum("mpni, ixpq -> mxnq", v_mpni, cap_t1_ixpq)
         v_mpin = o2[:, :self.t_nmo, :self.c_nmo, :]
-        c2_dprime_mnuv[:, self.t_nmo:, :, :self.t_nmo] -= \
+        c2_dprime_mnuv[:, self.t_nmo:, :, :self.t_nmo] += \
             1. / 2 * lib.einsum("mpin, ixpq -> mxnq", v_mpin, cap_t1_ixpq)
 
         # third term in equ 49
-        c2_dprime_mnuv[:, self.t_nmo:, :self.t_nmo, :] -= \
+        c2_dprime_mnuv[:, self.t_nmo:, :self.t_nmo, :] += \
             1. / 2 * lib.einsum("mpin, ixqp -> mxqn", v_mpin, cap_t1_ixpq)
 
         # fourth term in equ 49
         v_mnpi = o2[:, :, :self.t_nmo, :self.c_nmo]
-        c2_dprime_mnuv[:, :, self.t_nmo:, self.t_nmo:] -= \
+        c2_dprime_mnuv[:, :, self.t_nmo:, self.t_nmo:] += \
             1. / 2 * lib.einsum("mnpi, xyip -> mnyx", v_mnpi, cap_t0_xyip)
 
         # fifth term in equ 49
         v_mnpu = o2[:, :, :self.t_nmo, :]
-        c2_dprime_mnuv[:, :, self.t_nmo:, :] += \
+        c2_dprime_mnuv[:, :, self.t_nmo:, :] -= \
             lib.einsum("mnpu, xp -> mnxu", v_mnpu, cap_t2_xp)
 
         # sixth term in equ 49
         c2_dprime_mnuv[:, :self.t_nmo, self.t_nmo:,
-        self.t_nmo:] += lib.einsum("xypq, mp -> mqxy", t2,
+        self.t_nmo:] -= lib.einsum("xypq, mp -> mqxy", t2,
                                    cap_t3_mn[:, :self.t_nmo])
 
         c2_dprime_mnuv *= 4.
@@ -875,6 +879,15 @@ class CTSD(lib.StreamObject):
     @mo_energy.setter
     def mo_energy(self, value):
         self._mo_energy = value
+
+    def get_mo_energy(self):
+        mo_energy = self.ct_o1.copy()
+        mo_energy += 2 * lib.einsum("piqi -> pq", self.ct_o2[:, :self.c_nmo,
+                                                  :, :self.c_nmo])
+        mo_energy -= lib.einsum("piiq -> pq", self.ct_o2[:, :self.c_nmo,
+                                              :self.c_nmo, :])
+        mo_energy = mo_energy.diagonal()
+        return mo_energy
 
     @property
     def amps_algo(self):
@@ -977,14 +990,6 @@ class CTSD(lib.StreamObject):
         self._t1s[:, :self.c_nmo] = self.t1["xi"]
         self._t1s[:, self.c_nmo:] = self.t1["xa"]
 
-    def get_mo_energy(self):
-        mo_energy = self.ct_o1.copy()
-        mo_energy += 2 * lib.einsum("piqi -> pq", self.ct_o2[:, :self.c_nmo,
-                                                  :, :self.c_nmo])
-        mo_energy -= lib.einsum("piiq -> pq", self.ct_o2[:, :self.c_nmo,
-                                              :self.c_nmo, :])
-        mo_energy = mo_energy.diagonal()
-        return mo_energy
 
     
     def create_eris(self, eris=None, c2=None):
@@ -998,6 +1003,7 @@ class CTSD(lib.StreamObject):
         nvir = self.nmo - nocc
         eris.fock = self.get_fock()
         eris.e_hf = self.get_hf_energy()
+        eris.mo_energy = self.mo_energy
         eris.oooo = c2[:nocc, :nocc, :nocc, :nocc].transpose(0, 2, 1, 3)
         eris.ovoo = c2[:nocc, :nocc, nocc:, :nocc].transpose(0, 2, 1, 3)
         eris.oovv = c2[:nocc, nocc:, :nocc, nocc:].transpose(0, 2, 1, 3)
@@ -1006,7 +1012,7 @@ class CTSD(lib.StreamObject):
         eris.ovvv = c2[:nocc, nocc:, nocc:, nocc:].transpose(0, 2, 1, 3)
         eris.vvvv = c2[nocc:, nocc:, nocc:, nocc:].transpose(0, 2, 1, 3)
         eris.ovvv = lib.pack_tril(eris.ovvv.reshape(-1,nvir,nvir)).reshape(nocc,nvir,-1)
-        eris.vvvv = ao2mo.restore(4, eris.vvvv, nvir)
+        eris.vvvv = ao2mo.restore(1, eris.vvvv, nvir)
 
         return eris
 
