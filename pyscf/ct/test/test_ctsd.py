@@ -4,6 +4,7 @@ import numpy as np
 from pyscf import gto, scf, lib
 from pyscf import ct, mp, ao2mo
 from pyscf.ct import ctsd
+from pyscf.cc import ccsd
 
 
 def setUpModule():
@@ -12,15 +13,17 @@ def setUpModule():
     mol.verbose = 7
     #mol.output = '/dev/null'
     #mol.atom = '''
-    #    O  0.  0.  0.;
-    #    H  0.  -1.107176  1.107176;
-    #    H  0.  1.107176  1.107176;
+    #    N  0.  0 0;
+    #    N  0.  0 1.09768;
     #    '''
     mol.atom = '''
         O    0.000000    0.000000    0.117790
         H    0.000000    0.755453   -0.471161
         H    0.000000   -0.755453   -0.471161'''
-
+    #mol.atom = '''
+    #    H    0.000000   0   0
+    #    H    0.000000   0   2.0'''
+    mol.unit = 'A'
     mol.basis = 'ccpvdz'
     mol.build()
     mf = scf.RHF(mol)
@@ -178,7 +181,12 @@ class KnownValues(unittest.TestCase):
         ct_hf_e = myct.get_hf_energy(c0, c1, c2)
         print("CT HF energy = ", ct_hf_e)
 
+        mo_energy = mf.mo_energy.copy()
         ct_mo_energy = myct.get_mo_energy()
+        print("HF HOMO-LOMO gap = ", 
+              mo_energy[myct.c_nmo+1]-mo_energy[myct.c_nmo])
+        print("CT HOMO-LOMO gap = ", 
+              ct_mo_energy[myct.c_nmo+1]-ct_mo_energy[myct.c_nmo])
         fock = myct.get_fock()
         assert np.allclose(fock.diagonal(), ct_mo_energy)
 
@@ -224,9 +232,33 @@ class KnownValues(unittest.TestCase):
         eris = myct.create_eris()
         mymp = mp.MP2(mf)
         mymp.kernel(eris=eris)
+        mycc = ccsd.CCSD(mf)
+        mycc.kernel()
         print("CT-MP2 corr = ", mymp.e_corr)
+        print("CT-MP2 total = ", ct_hf_e + mymp.e_corr)
+        print("CCSD corr = ", mycc.e_corr)
 
 
+    def test_ct_ccsd(self):
+        myct.amps_algo = "mp2"
+        c0, c1, c2 = myct.kernel()
+        ct_hf_e = myct.get_hf_energy(c0, c1, c2)
+        print("CT HF energy = ", ct_hf_e)
+        eris = myct.create_eris()
+        mycc = ccsd.CCSD(mf)
+        mycc.kernel()
+        can_mp2_e = mycc.emp2 + mycc.e_hf
+        can_cc_e = mycc.e_tot
+        myct_cc = ccsd.CCSD(mf)
+        myct_cc.kernel(eris=eris)
+        ct_cc_e = myct_cc.e_tot
+        ct_mp2_e = myct_cc.emp2 + ct_hf_e
+        print("Canonical MP2 e tot = ", can_mp2_e)
+        print("Canonical CCSD e tot = ", can_cc_e)
+        print("CT HF e = ", ct_hf_e)
+        print("CT MP2 e tot = ", ct_mp2_e)
+        print("CT CCSD e tot = ", ct_cc_e)
+        print("END")
 
 
 if __name__ == "__main__":
