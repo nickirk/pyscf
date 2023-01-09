@@ -402,6 +402,7 @@ class CTSD(lib.StreamObject):
         if o2 is not None:
             c0, c1_prime, c2_prime, c2_dprime = self.commute_o2_t(o2)
             c1 += c1_prime
+            #c2 += c2_prime 
             c2 += c2_prime + c2_dprime
         
         if c1 is not None:

@@ -4,6 +4,7 @@ import numpy as np
 from pyscf import gto, scf, lib
 from pyscf import ct, mp, ao2mo
 from pyscf.ct import ctsd
+from pyscf import cc
 from pyscf.cc import ccsd
 
 
@@ -245,11 +246,13 @@ class KnownValues(unittest.TestCase):
         ct_hf_e = myct.get_hf_energy(c0, c1, c2)
         print("CT HF energy = ", ct_hf_e)
         eris = myct.create_eris()
-        mycc = ccsd.CCSD(mf)
+        mycc = cc.GCCSD(mf)
+        mycc.max_cycle = 1
         mycc.kernel()
         can_mp2_e = mycc.emp2 + mycc.e_hf
         can_cc_e = mycc.e_tot
         myct_cc = ccsd.CCSD(mf)
+        myct_cc.max_cycle = 1
         myct_cc.kernel(eris=eris)
         ct_cc_e = myct_cc.e_tot
         ct_mp2_e = myct_cc.emp2 + ct_hf_e
