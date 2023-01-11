@@ -176,7 +176,7 @@ class CTSD(lib.StreamObject):
         ct_o2: transformed 2-body integrals.
     """
 
-    def __init__(self, mf, t_basis=None, e_basis=None,
+    def __init__(self, mf,
                  a_nmo=None, mo_coeff=None, mo_occ=None,
                  dm1=None, dm2=None, eri=None):
         """
@@ -190,8 +190,6 @@ class CTSD(lib.StreamObject):
         self.verbose = self.mol.verbose
         self.stdout = self.mol.stdout
         self.max_memory = mf.max_memory
-        self.t_basis = t_basis
-        self.e_basis = e_basis
         # total number of orbitals
         self.nmo = len(mf.mo_energy)
         # core orbitals are doubly occupied, indices i,j,k,l...
@@ -471,8 +469,8 @@ class CTSD(lib.StreamObject):
             t1_xa = self.t1["xa"]
             t1_xi = self.t1["xi"]
         else:
-            t1_xa = t1[self.t_nmo:, self.c_nmo:self.t_nmo]
-            t1_xi = t1[self.t_nmo:, :self.c_nmo]
+            t1_xa = t1[:, self.c_nmo:self.t_nmo]
+            t1_xi = t1[:, :self.c_nmo]
 
         o1_mx = o1[:, self.t_nmo:]
         o1_mi = o1[:, :self.c_nmo]
@@ -508,6 +506,9 @@ class CTSD(lib.StreamObject):
         #o_xi = o_mn[self.t_nmo:, :self.c_nmo]
         if t2 is None:
             t2 = self._t2s
+        if o_mn is None:
+            o_mn = self.mf.get_fock()
+            o_mn = self.ao2mo(o_mn)
         o_mx = o_mn[:, self.t_nmo:]
         o_mp = o_mn[:, :self.t_nmo]
         c2 = np.zeros(self.eri.shape)
@@ -875,7 +876,7 @@ class CTSD(lib.StreamObject):
         if self._mo_energy is None:
             mo_energy = self.get_mo_energy()
             self._mo_energy = mo_energy.copy()
-        return mo_energy
+        return self._mo_energy
 
     @mo_energy.setter
     def mo_energy(self, value):

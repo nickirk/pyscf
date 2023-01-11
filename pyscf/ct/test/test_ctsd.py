@@ -40,7 +40,6 @@ def setUpModule():
 def tearDownModule():
     global mol, mf, myct
     mol.stdout.close()
-    del mol, mf, myct
 
 
 class KnownValues(unittest.TestCase):
@@ -106,6 +105,22 @@ class KnownValues(unittest.TestCase):
         dm2 = np.zeros([nmo, nmo, nmo, nmo])
         slices = [0, nmo, 0, nmo, 0, nmo, 1, nmo, 2, nmo, 3, nmo]
         d3 = ctsd.get_d3_slice_direct(dm1, dm2)
+
+    def test_get_c1(self):
+        t1 = np.ones((myct.e_nmo, myct.t_nmo))
+        c1 = myct.get_c1(t=t1)
+        pass
+
+    
+    def test_get_c1_prime(self):
+        #c1_prime = myct.get_c1_prime()
+        pass
+
+    def test_get_c2_prime(self):
+        pass
+
+    def test_get_c2_dprime(self):
+        pass
 
     def test_mp2_amps(self):
         t1, t2 = myct.get_mp2_amps()
@@ -224,6 +239,76 @@ class KnownValues(unittest.TestCase):
         print("CT MP2 total = ", ct_mp2_total)
         self.assertAlmostEqual(ct_mp2_total, mp2_total, 8)
 
+    def test_per_term_analysis(self):
+        c0, c1, c2 = myct.kernel()
+        ct_hf_e = myct.get_hf_energy(c0, c1, c2)
+        print("CT HF energy = ", ct_hf_e)
+        c1 = myct.get_c1() 
+        print("="*79)
+        print("Per term analysis")
+        print("="*79)
+        print("***** c1")
+        tensor_analysis(c1)
+
+    
+        c1_prime = myct.get_c1_prime()
+        print("***** c1_prime")
+        tensor_analysis(c1_prime)
+
+        c2 = myct.get_c2()
+        print("***** c2")
+        tensor_analysis(c2)
+
+        c2_prime = myct.get_c2_prime()
+        print("***** c2_prime")
+        tensor_analysis(c2_prime)
+
+        c2_dprime = myct.get_c2_dprime()
+        print("***** c2_dprime")
+        tensor_analysis(c2_dprime)
+
+        # The following [o1, t] gives rise to 1- and 2-body terms
+        fock_nm = myct.mf.get_fock()
+        fock_nm = myct.ao2mo(fock_nm)
+        c0_f, c1_f, c2_f = myct.commute(*myct.commute(o1=fock_nm))
+        print("***** c1_f")
+        tensor_analysis(c1_f)
+        print("***** c2_f")
+        tensor_analysis(c2_f)
+        print("***** Per term analysis complete *****")
+
+        print("***** Reproducing MP2 energy from these terms *****")
+        nocc = myct.nocc
+
+        e_hf = myct.mf.e_tot
+
+        e_mp2 = 0.
+        e_mp2 += e_hf
+
+        e_mp2 += 2.*np.einsum("ii ->", c1[:nocc, :nocc])
+        e_mp2 += 2.*np.einsum("ii ->", c1_prime[:nocc, :nocc])
+
+        e_mp2 += 2.*np.einsum("ijij ->", c2[:nocc, :nocc, :nocc, :nocc])
+        e_mp2 -= np.einsum("ijji ->", c2[:nocc, :nocc, :nocc, :nocc])
+
+        e_mp2 += 2.*np.einsum("ijij ->", c2_prime[:nocc, :nocc, :nocc, :nocc])
+        e_mp2 -= np.einsum("ijji ->", c2_prime[:nocc, :nocc, :nocc, :nocc])
+
+        e_mp2 += 2.*np.einsum("ijij ->", c2_dprime[:nocc, :nocc, :nocc, :nocc])
+        e_mp2 -= np.einsum("ijji ->", c2_dprime[:nocc, :nocc, :nocc, :nocc])
+
+        c0_f /= 2.
+        c1_f /= 2.
+        c2_f /= 2.
+        e_mp2 += c0_f
+        e_mp2 += 2.*np.einsum("ii ->", c1_f[:nocc, :nocc])
+        e_mp2 += 2.*np.einsum("ijij ->", c2_f[:nocc, :nocc, :nocc, :nocc])
+        e_mp2 -= np.einsum("ijji ->", c2_f[:nocc, :nocc, :nocc, :nocc])
+        print("***** Reproduced e_mp2 = ", e_mp2)
+        self.assertAlmostEqual(e_mp2, ct_hf_e)
+
+
+
 
     def test_ct_mp2(self):
         myct.amps_algo = "mp2"
@@ -263,6 +348,21 @@ class KnownValues(unittest.TestCase):
         print("CT CCSD e tot = ", ct_cc_e)
         print("END")
 
+def tensor_analysis(t):
+    if len(t.shape) == 2:
+        print("***** order 2 tensor")
+        print(" sum = ", np.sum(t))
+        print(" abs sum = ", np.sum(np.abs(t)))
+        print(" nonsymmetriness = ", np.sum(t - t.T))
+        print(" nondiagonalness = ", np.sum(np.abs(t)) - np.sum(np.abs(t.diagonal())))
+    elif len(t.shape) == 4:
+        print("***** order 4 tensor")
+        print(" sum = ", np.sum(t))
+        print(" abs sum = ", np.sum(np.abs(t)))
+        print(" nonsymmetriness 0123 - 1032= ", np.sum(t - t.transpose((1, 0, 3, 2))))
+        print(" nonsymmetriness 0123 - 3210= ", np.sum(t - t.transpose((3, 2, 1, 0))))
+        print(" nonsymmetriness 0123 - 2301= ", np.sum(t - t.transpose((2, 3, 0, 1))))
+        print(" nonsymmetriness 0123 - 1023= ", np.sum(t - t.transpose((1, 0, 2, 3))))
 
 if __name__ == "__main__":
     print("Full Tests for CT")
