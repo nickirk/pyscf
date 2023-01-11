@@ -27,9 +27,26 @@ import numpy as np
 
 from pyscf import lib
 from pyscf.lib import logger
-from pyscf import ao2mo
+from pyscf import ao2mo, gto, scf
 from functools import reduce
 from pyscf.cc.ccsd import _ChemistsERIs
+
+def tensor_analysis(t):
+    if len(t.shape) == 2:
+        print("***** order 2 tensor")
+        print(" sum = ", np.sum(t))
+        print(" abs sum = ", np.sum(np.abs(t)))
+        print(" nonsymmetriness = ", np.sum(t - t.T))
+        print(" nondiagonalness = ", np.sum(np.abs(t)) - np.sum(np.abs(t.diagonal())))
+    elif len(t.shape) == 4:
+        print("***** order 4 tensor")
+        print(" sum = ", np.sum(t))
+        print(" abs sum = ", np.sum(np.abs(t)))
+        print(" nonsymmetriness 0123 - 1032= ", np.sum(np.abs(t - t.transpose((1, 0, 3, 2)).copy())))
+        print(" nonsymmetriness 0123 - 3210= ", np.sum(np.abs(t - t.transpose((3, 2, 1, 0)).copy())))
+        print(" nonsymmetriness 0123 - 2301= ", np.sum(np.abs(t - t.transpose((2, 3, 0, 1)).copy())))
+        print(" nonsymmetriness 0123 - 1023= ", np.sum(np.abs(t - t.transpose((1, 0, 2, 3)).copy())))
+        print(" nonsymmetriness 0123 - 0132= ", np.sum(np.abs(t - t.transpose((0, 1, 3, 2)).copy())))
 
 def symmetrize(t):
     """This function symmetrizes tensor t of dim 2 or 4.
@@ -258,8 +275,6 @@ class CTSD(lib.StreamObject):
             i) [[H, T]_{1,2}, T]_{1,2} or
             ii) [[F, T]_{1,2}, T]_{1,2} as in Watson and Chan paper.
         The default will be the latter.
-        4. Return an eris that is compatible with existing solvers such as
-        CCSD. TODO
 
         Args:
 
@@ -577,6 +592,7 @@ class CTSD(lib.StreamObject):
         c2_prime[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo,
                  self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo] = vvvv
 
+        c2_prime = symmetrize(c2_prime)
         return c2_prime
 
     def get_c0(self, o2=None, dm1=None, dm2=None):
@@ -842,6 +858,8 @@ class CTSD(lib.StreamObject):
                                    cap_t3_mn[:, :self.t_nmo])
 
         c2_dprime_mnuv *= 4.
+
+        c2_dprime_mnuv = symmetrize(c2_dprime_mnuv)
         return c2_dprime_mnuv
 
     def get_hf_energy(self, c0=None, c1=None, c2=None):
@@ -891,6 +909,37 @@ class CTSD(lib.StreamObject):
         mo_energy = mo_energy.diagonal()
         return mo_energy
 
+    def canonicalize(self):
+        """
+        This function iteratively diagnolize the CT-Fock matrix until
+        self-consistency is reached. In other words, it reoptimize the
+        orbitals in the presence of the CT integrals. 
+
+        Returns:
+            ct_mo_coeff: matrix [nmo, nmo]. Transformation matrix for integrals.
+        """
+        print("ct mo_energy = ")
+        print(self.mo_energy)
+        mol = gto.M()
+        mol.verbose = 7
+        mol.nelectron = self.nocc * 2
+        mf = scf.RHF(mol)
+        mf.get_hcore = lambda *args: self.ct_o1
+        mf.get_ovlp = lambda *args: np.eye(self.nmo)
+        mf.energy_nuc = lambda *args: self.mf.energy_nuc()
+
+        mf._eri = self.ct_o2.transpose((0, 2, 1, 3))
+        dm0 = np.diag(self.mf.mo_occ)
+        mf.kernel(dm0=dm0)
+        print("mo_energy = ")
+        print(mf.mo_energy)
+        mol.incore_anyway = True
+        self.ct_o1 = self.ao2mo(self.ct_o1, mf.mo_coeff)
+        self.ct_o2 = self.ao2mo(self.ct_o2, mf.mo_coeff, to_phy=False)
+
+        return mf.mo_coeff
+
+
     @property
     def amps_algo(self):
         return self._amps_algo
@@ -902,7 +951,7 @@ class CTSD(lib.StreamObject):
                                "mp2, zero, f12")
         self._amps_algo = algo
 
-    def ao2mo(self, t=None, mo_coeff=None):
+    def ao2mo(self, t=None, mo_coeff=None, to_phy=True):
         """
         Args:
             t: 2D or 4D tensor in ao rep.
@@ -914,12 +963,18 @@ class CTSD(lib.StreamObject):
         """
         if mo_coeff is None:
             mo_coeff = self.mf.mo_coeff
-        if t is None or len(t.shape) == 4:
-            self.eri = ao2mo.incore.full(self.mf._eri, mo_coeff)
+        if t is None:
+            t = self.mf._eri
+            t = ao2mo.restore(1, t, self.nmo)
+        if len(t.shape) == 4:
+            self.eri = ao2mo.incore.full(t, mo_coeff)
             # use no symmetries for initial implementation
             # transpose to Physicsts notation
-            self.eri = ao2mo.restore(1, self.eri, self.nmo).transpose((0, 2, 1, 3))
-            return self.eri
+            # self.eri = ao2mo.restore(1, self.eri, self.nmo)
+            if to_phy:
+                return self.eri.transpose((0, 2, 1, 3))
+            else:
+                return self.eri
         elif len(t.shape) == 2:
             t_mo = reduce(np.dot, (mo_coeff.conj().T, t, mo_coeff))
             return t_mo
