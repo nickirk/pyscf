@@ -17,13 +17,13 @@ def setUpModule():
     #    N  0.  0 0;
     #    N  0.  0 1.09768;
     #    '''
-    mol.atom = '''
-        O    0.000000    0.000000    0.117790
-        H    0.000000    0.755453   -0.471161
-        H    0.000000   -0.755453   -0.471161'''
     #mol.atom = '''
-    #    H    0.000000   0   0
-    #    H    0.000000   0   2.0'''
+    #    O    0.000000    0.000000    0.117790
+    #    H    0.000000    0.755453   -0.471161
+    #    H    0.000000   -0.755453   -0.471161'''
+    mol.atom = '''
+        H    0.000000   0   0
+        H    0.000000   0   2.0'''
     mol.unit = 'A'
     mol.basis = 'ccpvdz'
     mol.build()
@@ -39,7 +39,8 @@ def setUpModule():
 
 def tearDownModule():
     global mol, mf, myct
-    mol.stdout.close()
+    #mol.stdout.close()
+    del mol, mf, myct
 
 
 class KnownValues(unittest.TestCase):
@@ -215,29 +216,6 @@ class KnownValues(unittest.TestCase):
         hf_e = myct.get_hf_energy()
         self.assertAlmostEqual(hf_e, hf_e_from_fock, 8)
         
-    def test_ct_ref(self):
-        #mf = scf.RHF(mol).run()
-        mymp = mp.MP2(mf).run()
-        mp2_total = mymp.e_tot
-        myct.amps_algo = "mp2"
-        c0, c1, c2 = myct.kernel()
-        ct_hf_e = myct.get_hf_energy(c0, c1, c2)
-        print("CT HF energy = ", ct_hf_e)
-
-        ct_mo_energy = myct.get_mo_energy()
-        e_ia = -(ct_mo_energy[myct.c_nmo:myct.t_nmo, None] \
-                - ct_mo_energy[None, :myct.c_nmo])
-        ct_vvoo = c2[myct.c_nmo:myct.t_nmo, myct.c_nmo:myct.t_nmo, 
-                     :myct.c_nmo, :myct.c_nmo]
-        ct_oovv = c2[:myct.c_nmo, :myct.c_nmo, 
-                     myct.c_nmo:myct.t_nmo, myct.c_nmo:myct.t_nmo]
-        ct_t2 = ct_vvoo / lib.direct_sum("ai+bj -> abij", e_ia, e_ia)
-        ct_mp2_e = 2. * lib.einsum("abij, ijab -> ", ct_t2, ct_oovv)
-        ct_mp2_e -= lib.einsum("abji, ijab -> ", ct_t2, ct_oovv)
-        ct_mp2_total = ct_hf_e + ct_mp2_e
-        print("CT MP2 corr = ", ct_mp2_e)
-        print("CT MP2 total = ", ct_mp2_total)
-        self.assertAlmostEqual(ct_mp2_total, mp2_total, 8)
 
     def test_per_term_analysis(self):
         c0, c1, c2 = myct.kernel()
@@ -356,36 +334,94 @@ class KnownValues(unittest.TestCase):
         print("After canonicalization CT HOMO-LOMO gap = ", 
               ct_mo_energy[myct.c_nmo+1]-ct_mo_energy[myct.c_nmo])
 
+    def test_create_eris(self):
+        hcore = myct.ao2mo(myct.mf.get_hcore())
+        can_mp2 = mp.MP2(mf)
+        can_mp2.kernel()
         
+
+        myct.amps_algo = "zero"
+        c0, h1, v2 = myct.kernel()
+        assert np.allclose(hcore, h1)
+        # get original eri from mf and mo_coeff
+        eri = ao2mo.full(mf._eri, mf.mo_coeff)
+        eri = ao2mo.restore(1, eri, myct.nmo).transpose((0, 2, 1, 3))
+        assert np.allclose(eri, v2)
+        eris = myct.create_eris()
+        mymp = mp.MP2(mf)
+        mymp.kernel(eris=eris)
+        self.assertAlmostEqual(mymp.e_corr, can_mp2.e_corr)
+
+
+    def test_ct_ref(self):
+        #mf = scf.RHF(mol).run()
+        mymp = mp.MP2(mf).run()
+        mp2_total = mymp.e_tot
+        myct.amps_algo = "mp2"
+        c0, c1, c2 = myct.kernel()
+        ct_hf_e = myct.get_hf_energy(c0, c1, c2)
+        print("CT HF energy = ", ct_hf_e)
+
+        ct_mo_energy = myct.get_mo_energy()
+        e_ia = -(ct_mo_energy[myct.c_nmo:myct.t_nmo, None] \
+                - ct_mo_energy[None, :myct.c_nmo])
+        ct_vvoo = c2[myct.c_nmo:myct.t_nmo, myct.c_nmo:myct.t_nmo, 
+                     :myct.c_nmo, :myct.c_nmo]
+        ct_oovv = c2[:myct.c_nmo, :myct.c_nmo, 
+                     myct.c_nmo:myct.t_nmo, myct.c_nmo:myct.t_nmo]
+        ct_t2 = ct_vvoo / lib.direct_sum("ai+bj -> abij", e_ia, e_ia)
+        ct_mp2_e = 2. * lib.einsum("abij, ijab -> ", ct_t2, ct_oovv)
+        ct_mp2_e -= lib.einsum("abji, ijab -> ", ct_t2, ct_oovv)
+        ct_mp2_total = ct_hf_e + ct_mp2_e
+        print("CT MP2 corr = ", ct_mp2_e)
+        print("CT MP2 total = ", ct_mp2_total)
+        self.assertAlmostEqual(ct_mp2_total, mp2_total, 8)
 
     def test_ct_mp2(self):
         myct.amps_algo = "mp2"
         c0, c1, c2 = myct.kernel()
         ct_hf_e = myct.get_hf_energy(c0, c1, c2)
-        print("CT HF energy = ", ct_hf_e)
         eris = myct.create_eris()
         mymp = mp.MP2(mf)
         mymp.kernel(eris=eris)
-        mycc = ccsd.CCSD(mf)
-        mycc.kernel()
+        #mycc = ccsd.CCSD(mf)
+        #mycc.kernel()
+        print("CT HF energy = ", ct_hf_e)
         print("CT-MP2 corr = ", mymp.e_corr)
         print("CT-MP2 total = ", ct_hf_e + mymp.e_corr)
-        print("CCSD corr = ", mycc.e_corr)
+        #print("CCSD corr = ", mycc.e_corr)
+        #print("CCSD total = ", mycc.e_tot)
+        return mymp.e_tot
+    
+    def test_c2_dprime(self):
+        is_buggy = False
+        e_old = self.test_ct_mp2()
+        while not is_buggy:
+            print("e_old = ", e_old)
+            emp2 = self.test_ct_mp2()
+            print("emp2 = ", emp2)
+            if e_old != emp2:
+                is_buggy = True
+    
+
+
 
 
     def test_ct_ccsd(self):
         myct.amps_algo = "mp2"
         myct.kernel()
-        myct.canonicalize()
+        #myct.canonicalize()
         ct_hf_e = myct.get_hf_energy()
         print("CT HF energy = ", ct_hf_e)
         
-        eris = myct.create_eris()
-        mycc = cc.GCCSD(mf)
-        mycc.max_cycle = 1
+        mycc = cc.CCSD(mf)
+        #mycc.max_cycle = 1
         mycc.kernel()
+
         can_mp2_e = mycc.emp2 + mycc.e_hf
         can_cc_e = mycc.e_tot
+
+        eris = myct.create_eris()
         myct_cc = ccsd.CCSD(mf)
         myct_cc.max_cycle = 1
         myct_cc.kernel(eris=eris)
