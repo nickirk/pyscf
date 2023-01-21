@@ -7,6 +7,10 @@ from pyscf.ct import ctsd
 from pyscf import cc
 from pyscf.cc import ccsd
 
+import os
+os.environ["MKL_NUM_THREADS"] = "1" 
+os.environ["NUMEXPR_NUM_THREADS"] = "1" 
+os.environ["OMP_NUM_THREADS"] = "1" 
 
 def setUpModule():
     global mol, mf, myct
@@ -18,6 +22,10 @@ def setUpModule():
     #    N  0.  0 1.09768;
     #    '''
     #mol.atom = '''
+    #    F  0.  0 0;
+    #    F  0.  0 2.0;
+    #    '''
+    #mol.atom = '''
     #    O    0.000000    0.000000    0.117790
     #    H    0.000000    0.755453   -0.471161
     #    H    0.000000   -0.755453   -0.471161'''
@@ -25,10 +33,11 @@ def setUpModule():
         H    0.000000   0   0
         H    0.000000   0   2.0'''
     mol.unit = 'A'
-    mol.basis = 'ccpvdz'
+    mol.basis = 'sto6g'
+    #mol.basis = 'ccpvdz'
     mol.build()
     mf = scf.RHF(mol)
-    mf.chkfile = tempfile.NamedTemporaryFile().name
+    #mf.chkfile = tempfile.NamedTemporaryFile().name
     mf.conv_tol_grad = 1e-8
     mf.kernel()
 
@@ -148,6 +157,7 @@ class KnownValues(unittest.TestCase):
         e_xi = -(mo_e_x[:, None] - mo_e_i[None, :])
         t_xyij = ct_eeoo/lib.direct_sum(
             "xi+yj->xyij", e_xi, e_xi)
+        
 
         # use mp2 algo from pyscf to test
         mp2_e, t2_mp2 = mymp2.kernel(with_t2=True)
@@ -232,6 +242,8 @@ class KnownValues(unittest.TestCase):
         c1_prime = myct.get_c1_prime()
         print("***** c1_prime")
         ctsd.tensor_analysis(c1_prime)
+        print("***** c1_prime occ-occ block")
+        ctsd.tensor_analysis(c1_prime[:myct.nocc, :myct.nocc])
 
         c2 = myct.get_c2()
         print("***** c2")
@@ -251,12 +263,20 @@ class KnownValues(unittest.TestCase):
         print("***** c2_dprime occ-occ-occ-occ block")
         ctsd.tensor_analysis(c2_dprime[:myct.nocc, :myct.nocc, :myct.nocc, :myct.nocc])
 
+        c2_dprime_sr = myct.get_c2_dprime_sr()
+        print("***** c2_dprime_sr")
+        ctsd.tensor_analysis(c2_dprime_sr)
+        print("***** c2_dprime_sr occ-occ-occ-occ block")
+        ctsd.tensor_analysis(c2_dprime_sr[:myct.nocc, :myct.nocc, :myct.nocc, :myct.nocc])
+
         # The following [o1, t] gives rise to 1- and 2-body terms
         fock_nm = myct.mf.get_fock()
         fock_nm = myct.ao2mo(fock_nm)
         c0_f, c1_f, c2_f = myct.commute(*myct.commute(o1=fock_nm))
         print("***** c1_f")
         ctsd.tensor_analysis(c1_f)
+        print("***** c1_f occ-occ block")
+        ctsd.tensor_analysis(c1_f[:myct.nocc, :myct.nocc])
         print("***** c2_f")
         ctsd.tensor_analysis(c2_f)
         print("***** c2_f occ-occ-occ-occ block")
@@ -272,10 +292,15 @@ class KnownValues(unittest.TestCase):
         de = 0.
         e_mp2 += e_hf
 
+        de = 0.
         de += 2.*np.einsum("ii ->", c1[:nocc, :nocc])
-        de += 2.*np.einsum("ii ->", c1_prime[:nocc, :nocc])
         e_mp2 += de
         print("***** c1 contribution = ", de)
+
+        de = 0.
+        de += 2.*np.einsum("ii ->", c1_prime[:nocc, :nocc])
+        e_mp2 += de
+        print("***** c1_prime contribution = ", de)
 
         de = 0.
         de += 2.*np.einsum("ijij ->", c2[:nocc, :nocc, :nocc, :nocc])
@@ -321,16 +346,14 @@ class KnownValues(unittest.TestCase):
         myct.kernel()
         ctsd.tensor_analysis(myct.ct_o2)
         ct_mo_energy = myct.get_mo_energy()
-        print("Before canonicalization CT HOMO-LOMO gap = ", 
-              ct_mo_energy[myct.c_nmo+1]-ct_mo_energy[myct.c_nmo])
+        hl_gap = ct_mo_energy[myct.c_nmo+1]-ct_mo_energy[myct.c_nmo] 
         mo_coeff = myct.canonicalize()
         ct_fock = myct.get_fock()
         #ct_fock = myct.ao2mo(ct_fock, mo_coeff)
         #ct_eri  = myct.ao2mo(myct.ct_o2, mo_coeff, to_phy=False)
-        print("***** CT Fock matrix *****")
-        print(ct_fock)
         ctsd.tensor_analysis(ct_fock)
         ct_mo_energy = myct.get_mo_energy()
+        print("Before canonicalization CT HOMO-LOMO gap = ", hl_gap)
         print("After canonicalization CT HOMO-LOMO gap = ", 
               ct_mo_energy[myct.c_nmo+1]-ct_mo_energy[myct.c_nmo])
 
@@ -351,6 +374,16 @@ class KnownValues(unittest.TestCase):
         mymp = mp.MP2(mf)
         mymp.kernel(eris=eris)
         self.assertAlmostEqual(mymp.e_corr, can_mp2.e_corr)
+
+        # testing oooo block 
+        myct.amps_algo = "mp2"
+        c0, h1, v2 = myct.kernel()
+        eris = myct.create_eris()
+        ct_hf_e = 2. * np.einsum("ii -> ", h1[:myct.nocc, :myct.nocc])
+        ct_hf_e += 2. * np.einsum("iijj -> ", eris.oooo)
+        ct_hf_e -= np.einsum("ijij -> ", eris.oooo)
+        ct_hf_e += mf.energy_nuc()
+        self.assertAlmostEqual(ct_hf_e, mymp.e_tot)
 
 
     def test_ct_ref(self):
@@ -393,23 +426,122 @@ class KnownValues(unittest.TestCase):
         #print("CCSD total = ", mycc.e_tot)
         return mymp.e_tot
     
-    def test_c2_dprime(self):
-        is_buggy = False
-        e_old = self.test_ct_mp2()
-        while not is_buggy:
-            print("e_old = ", e_old)
-            emp2 = self.test_ct_mp2()
-            print("emp2 = ", emp2)
-            if e_old != emp2:
-                is_buggy = True
-    
+    def test_ct_mp2_sr_mr(self):
+        myct.amps_algo = "mp2"
+        #myct.mf.mo_energy[myct.c_nmo:] += 1
+        myct.kernel()
+        # construct c0, c1, c2 from mr implementation
+        h_mn = myct.mf.get_hcore()
+        h_mn = myct.ao2mo(h_mn)
 
+        #ct_0, ct_o1, ct_o2 = self.commute(o1=h_mn, o2=self.eri)
+        c1 = myct.get_c1(h_mn)
+        c2 = myct.get_c2(h_mn)
+        c2_prime = myct.get_c2_prime(myct.eri)
 
+        c1_prime_mr = myct.get_c1_prime(myct.eri)
+        c2_dprime_mr = myct.get_c2_dprime(myct.eri)
+
+        c1_mr = c1.copy()
+        c1_mr += c1_prime_mr
+        c1_mr += h_mn
+
+        c2_mr = c2.copy()
+        c2_mr += c2_prime
+        c2_mr += c2_dprime_mr
+        c2_mr += myct.eri
+        ct_hf_mr = myct.get_hf_energy(0, c1_mr, c2_mr)
+
+        # construct fock for mr
+        fock_mr = c1_mr.copy()
+        fock_mr += 2. * np.einsum("piqi -> pq", c2_mr[:, :myct.c_nmo, :, :myct.c_nmo])
+        fock_mr -= np.einsum("piiq -> pq", c2_mr[:, :myct.c_nmo, :myct.c_nmo, :])
+        fock_mr_ct = myct.get_fock()
+
+        assert np.allclose(fock_mr, fock_mr_ct)
+
+        # construct c0, c1, c2 from sr implementation
+        c1_prime_sr = myct.get_c1_prime_sr(myct.eri)
+        #assert np.allclose(c1_prime_mr, c1_prime_sr)
+        c2_dprime_sr = myct.get_c2_dprime_sr(myct.eri)
+
+        c1_sr = c1.copy()
+        c1_sr += h_mn
+
+        c2_sr = c2.copy()
+        c2_sr += c2_prime
+        c2_sr += myct.eri
+
+        v_pqab = myct.eri[:, :, myct.c_nmo:, myct.c_nmo:]
+        c2_generic = np.zeros(c2_sr.shape)
+        c2_generic[:, :, :myct.c_nmo, :myct.c_nmo] = \
+            1./2 * lib.einsum("pqab, abij -> pqij", v_pqab, myct._t2s)
+
+        v_pqij = myct.eri[:, :, :myct.c_nmo, :myct.c_nmo]
+        c2_generic[:, :, myct.c_nmo:, myct.c_nmo:] -= \
+            1./2 * lib.einsum("pqij, abij -> pqab", v_pqij, myct._t2s)
+        c2_generic *= 4. 
+        c2_generic = ctsd.symmetrize(c2_generic)
+        c2_sr += c2_generic
+        
+        ct_hf_sr = myct.get_hf_energy(0, c1_sr, c2_sr)
+        self.assertAlmostEqual(ct_hf_mr, ct_hf_mr)
+
+        #construct fock
+        c1_sr += c1_prime_sr
+
+        fock_sr = c1_sr.copy()
+        fock_sr += 2. * np.einsum("piqi -> pq", c2_sr[:, :myct.c_nmo, :, :myct.c_nmo])
+        fock_sr -= np.einsum("piiq -> pq", c2_sr[:, :myct.c_nmo, :myct.c_nmo, :])
+
+        assert np.allclose(fock_mr, fock_sr)
+
+        #assert np.allclose(fock_mr, fock_sr)
+        c2_sr += c2_dprime_mr
+        c2_sr -= c2_generic
+
+        c2_sr_vvoo = c2_sr[myct.c_nmo:, myct.c_nmo:, :myct.c_nmo, :myct.c_nmo]
+        c2_mr_vvoo = c2_mr[myct.c_nmo:, myct.c_nmo:, :myct.c_nmo, :myct.c_nmo]
+
+        ct_mo_energy = fock_sr.diagonal()
+        e_ia = -(ct_mo_energy[myct.c_nmo:, None] \
+                - ct_mo_energy[None, :myct.c_nmo])
+        ct_vvoo = c2_sr[myct.c_nmo:, myct.c_nmo:, 
+                     :myct.c_nmo, :myct.c_nmo]
+        ct_oovv = c2_sr[:myct.c_nmo, :myct.c_nmo, 
+                     myct.c_nmo:, myct.c_nmo:]
+        ct_t2 = ct_vvoo / lib.direct_sum("ai+bj -> abij", e_ia, e_ia)
+        ct_mp2_e = 2. * lib.einsum("abij, ijab -> ", ct_t2, ct_oovv)
+        ct_mp2_e -= lib.einsum("abji, ijab -> ", ct_t2, ct_oovv)
+        ct_mp2_total = ct_hf_sr + ct_mp2_e
+
+        eris = myct.create_eris(fock=fock_sr, c2=c2_sr)
+
+        myct_cc = cc.ccsd.CCSD(mf)
+        #myct_cc.max_cycle = 1
+        myct_cc.kernel(eris=eris)
+        ct_cc_e = myct_cc.e_tot
+        ct_mp2_e = myct_cc.emp2 + ct_hf_sr
+
+        mycc = cc.CCSD(mf)
+        #mycc.max_cycle = 1
+        mycc.kernel()
+
+        can_mp2_e = mycc.emp2 + mycc.e_hf
+        can_cc_e = mycc.e_tot
+        print("*"*79)
+        print("Canonical CCSD e tot = ", can_cc_e)
+        print("CT HF e = ", ct_hf_sr)
+        print("ct mp2 corr =", ct_mp2_e)
+        print("ct mp2 total =", ct_mp2_total)
+        print("CT CCSD e tot = ", ct_cc_e)
+        print("CT CCSD e corr = ", myct_cc.e_corr)
+        print("END")
 
 
     def test_ct_ccsd(self):
         myct.amps_algo = "mp2"
-        myct.kernel()
+        c0, c1, c2 = myct.kernel()
         #myct.canonicalize()
         ct_hf_e = myct.get_hf_energy()
         print("CT HF energy = ", ct_hf_e)
@@ -420,10 +552,11 @@ class KnownValues(unittest.TestCase):
 
         can_mp2_e = mycc.emp2 + mycc.e_hf
         can_cc_e = mycc.e_tot
+        
 
         eris = myct.create_eris()
-        myct_cc = ccsd.CCSD(mf)
-        myct_cc.max_cycle = 1
+        myct_cc = cc.ccsd.CCSD(mf)
+        #myct_cc.max_cycle = 1
         myct_cc.kernel(eris=eris)
         ct_cc_e = myct_cc.e_tot
         ct_mp2_e = myct_cc.emp2 + ct_hf_e
@@ -431,7 +564,9 @@ class KnownValues(unittest.TestCase):
         print("Canonical CCSD e tot = ", can_cc_e)
         print("CT HF e = ", ct_hf_e)
         print("CT MP2 e tot = ", ct_mp2_e)
+        print("CT MP2 e corr = ", myct_cc.emp2)
         print("CT CCSD e tot = ", ct_cc_e)
+        print("CT CCSD e corr = ", myct_cc.e_corr)
         print("END")
 
 

@@ -60,13 +60,13 @@ def symmetrize(t):
     """
     t_sym = t.copy()
     if t.ndim == 2:
-        t_sym += t.T
+        t_sym += t.T.copy()
         t_sym /= 2.
     elif t.ndim == 4:
-        t_sym += t.transpose((1, 0, 3, 2))
-        t_sym += t.transpose((2, 3, 0, 1))
-        t_sym += t.transpose((3, 2, 1, 0))
-        t_sym *= 1./4 
+        t_sym += t.transpose((1, 0, 3, 2)).copy()
+        t_sym += t.transpose((2, 3, 0, 1)).copy()
+        t_sym += t.transpose((3, 2, 1, 0)).copy()
+        t_sym *= 1./4.
     else:
         raise ValueError("Incorrect length of tensor: "+str(len(t))+"! Only 2 or 4 is allowed.")
 
@@ -315,14 +315,17 @@ class CTSD(lib.StreamObject):
         fock_mn = self.ao2mo(fock_mn)
 
         # The following [o1, t] gives rise to 1- and 2-body terms
-        c0_f, c1_f, c2_f = self.commute(*self.commute(o1=fock_mn))
+        #c0_f, c1_f, c2_f = self.commute(*self.commute(o1=fock_mn))
 
 
         # final step might need to do some transformation on the eris so that
         # other solvers can use it directly as usual integrals.
-        self.ct_0 = ct_0 + c0_f/2.
-        self.ct_o1 = ct_o1 + c1_f/2.
-        self.ct_o2 = ct_o2 + c2_f/2.
+        #self.ct_0 = ct_0 + c0_f/2.
+        #self.ct_o1 = ct_o1 + c1_f/2.
+        #self.ct_o2 = ct_o2 + c2_f/2.
+        self.ct_0 = ct_0
+        self.ct_o1 = ct_o1
+        self.ct_o2 = ct_o2
         return self.ct_0, self.ct_o1, self.ct_o2
 
 
@@ -462,7 +465,9 @@ class CTSD(lib.StreamObject):
 
         c0 = self.get_c0(o2)
         c1_prime = self.get_c1_prime(o2)
+        #c1_prime = self.get_c1_prime_sr(o2)
         c2_dprime = self.get_c2_dprime(o2)
+        #c2_dprime = self.get_c2_dprime_sr(o2)
 
 
         return c0, c1_prime, c2_prime, c2_dprime
@@ -560,37 +565,37 @@ class CTSD(lib.StreamObject):
         c2_prime = np.zeros(o2.shape)
         o2_ooeo = o2[:self.c_nmo, :self.c_nmo, self.t_nmo:, :self.c_nmo]
         oooo = 4. * lib.einsum("ijxl, xk -> ijkl", o2_ooeo, self.t1["xi"])
-        c2_prime[:self.c_nmo, :self.c_nmo, :self.c_nmo:, :self.c_nmo] = oooo
+        c2_prime[:self.c_nmo, :self.c_nmo, :self.c_nmo:, :self.c_nmo] += oooo
 
         o2_oveo = o2[:self.c_nmo, self.c_nmo:self.t_nmo, self.t_nmo:, :self.c_nmo]
         ovoo = 4. * lib.einsum("iaxk, xj -> iajk", o2_oveo, self.t1["xi"])
         c2_prime[:self.c_nmo, self.c_nmo:self.t_nmo, :self.c_nmo,
-                 :self.c_nmo] = ovoo
+                 :self.c_nmo] += ovoo
 
         o2_ooev = o2[:self.c_nmo, :self.c_nmo, self.t_nmo:, self.c_nmo:self.t_nmo]
         oovv = 4. * lib.einsum("ijxb, xa -> ijab", o2_ooev, self.t1["xa"])
         c2_prime[:self.c_nmo, :self.c_nmo, self.c_nmo:self.t_nmo,
-                 self.c_nmo:self.t_nmo] = oovv
+                 self.c_nmo:self.t_nmo] += oovv
 
         o2_oveo = o2[:self.c_nmo, self.c_nmo:self.t_nmo, self.t_nmo:, :self.c_nmo]
         ovvo = 4. * lib.einsum("iaxj, xb -> iabj", o2_oveo, self.t1["xa"])
         c2_prime[:self.c_nmo, self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo,
-                 :self.c_nmo] = ovvo
+                 :self.c_nmo] += ovvo
 
         o2_ovev = o2[:self.c_nmo, self.c_nmo:self.t_nmo, self.t_nmo:,
                   self.c_nmo:self.t_nmo]
         ovov = 4. * lib.einsum("iaxb, xj -> iajb", o2_ovev, self.t1["xi"])
         c2_prime[:self.c_nmo, self.c_nmo:self.t_nmo, :self.c_nmo,
-                 self.c_nmo:self.t_nmo] = ovov
+                 self.c_nmo:self.t_nmo] += ovov
         ovvv = 4. * lib.einsum("iaxc, xb -> iabc", o2_ovev, self.t1["xa"])
         c2_prime[:self.c_nmo, self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo,
-                 self.c_nmo:self.t_nmo] = ovvv
+                 self.c_nmo:self.t_nmo] += ovvv
 
         o2_vvev = o2[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo, self.t_nmo:,
                      self.c_nmo:self.t_nmo]
         vvvv = 4. * lib.einsum("abxd, xc -> abcd", o2_vvev, self.t1["xa"])
         c2_prime[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo,
-                 self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo] = vvvv
+                 self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo] += vvvv
 
         c2_prime = symmetrize(c2_prime)
         return c2_prime
@@ -687,7 +692,7 @@ class CTSD(lib.StreamObject):
 
         # s6
         # TODO: This contraction is very heavy. Need optimization!!
-        s6_mn = lib.einsum("mnuv, wnuv -> wm", o2, dm2_bar)
+        s6_mn = lib.einsum("mnuv, pnuv -> pm", o2, dm2_bar)
         s6_px = s6_mn[:self.t_nmo, self.t_nmo:]
         s6_xp = s6_mn[self.t_nmo:, :self.t_nmo]
 
@@ -710,9 +715,10 @@ class CTSD(lib.StreamObject):
 
         # second term in equation 44
         v_minx = o2[:, :self.c_nmo, :, self.t_nmo:].copy()
-        v_minx -= 1. / 2 * o2[:, :self.c_nmo, self.t_nmo:,
-                           :].transpose(0, 1, 3, 2)
+        # why is there a transpose here???
+        v_mixn = o2[:, :self.c_nmo, self.t_nmo:, :].copy()
         c1_prime_mn -= lib.einsum("minx, xi -> mn", v_minx, s2_xi)
+        c1_prime_mn += 1. / 2 * lib.einsum("mixn, xi -> mn", v_mixn, s2_xi)
 
         # third term in equation 44
         v_ijxm = o2[:self.c_nmo, :self.c_nmo,
@@ -738,9 +744,9 @@ class CTSD(lib.StreamObject):
 
         # second term in equation 45
         v_minp = o2[:, :self.c_nmo, :, :self.t_nmo].copy()
-        v_mipn = o2[:, :self.c_nmo, :self.t_nmo, :]
-        v_minp -= 1. / 2 * v_mipn.transpose((0, 1, 3, 2))
+        v_mipn = o2[:, :self.c_nmo, :self.t_nmo, :].copy()
         c1_prime_mn += lib.einsum("minp, ip -> mn", v_minp, s3_ip)
+        c1_prime_mn -= 1./2 * lib.einsum("mipn, ip -> mn", v_mipn, s3_ip)
 
         # third term in equation 45
         v_ijpm = o2[:self.c_nmo, :self.c_nmo, :self.t_nmo, :]
@@ -755,7 +761,32 @@ class CTSD(lib.StreamObject):
 
         c1_prime_mn *= 2.
 
+        c1_prime_nm = symmetrize(c1_prime_mn)
+
         return c1_prime_mn
+    
+    def get_c2_dprime_generic(self, o2=None):
+        if o2 is None:
+            o2 = self.eri
+        c2_dprime_generic = np.zeros([self.nmo, self.nmo, self.nmo,
+                                   self.nmo])
+
+        # adding e_dprime_mnuv contribution
+        # TODO: the on-the-fly slicing is not the most efficient way, fix it
+        # first term in equation 48
+        v_mnxy = o2[:, :, self.t_nmo:, self.t_nmo:]
+        c2_dprime_generic[:, :, :self.t_nmo, :self.t_nmo] += \
+            1. / 2 * lib.einsum("mnxy, xypq -> mnpq", v_mnxy, t2)
+        
+        # adding contributions from a_dprime_mnuv, notice the overall - sign
+        v_mnpq = o2[:, :, :self.t_nmo, :self.t_nmo]
+        c2_dprime_generic[:, :, self.t_nmo:, self.t_nmo:] -= \
+            1. / 2 * lib.einsum("mnpq, xypq -> mnxy", v_mnpq, t2)
+        
+        c2_dprime_generic *= 4
+        c2_dprime_generic = symmetrize(c2_dprime_generic)
+        return c2_dprime_generic
+        
 
     def get_c2_dprime(self, o2=None, dm1=None):
         """
@@ -861,6 +892,123 @@ class CTSD(lib.StreamObject):
 
         c2_dprime_mnuv = symmetrize(c2_dprime_mnuv)
         return c2_dprime_mnuv
+
+    def get_c2_dprime_sr(self, o2=None):
+        """
+        Function to construct c_double_prime_mnuv in
+        single reference case.
+        Normal ordered with respect to HF Det.
+        Equations derived by hand.
+        This function is for test purpose.
+        Args:
+            o2: 4D ndarray. 2-body operator 
+
+        Returns:
+            c2_dprime_mnuv: 4D tensor.
+        """
+        if o2 is None:
+            o2 = self.eri
+        
+        t2 = self._t2s
+        c2_dprime = np.zeros(o2.shape)
+        # adding e_dprime_mnuv contribution
+        # TODO: the on-the-fly slicing is not the most efficient way, fix it
+        # first terms in equation 48 and 49
+        # generic two body terms
+        v_pqab = o2[:, :, self.c_nmo:, self.c_nmo:]
+        c2_dprime[:, :, :self.c_nmo, :self.c_nmo] += \
+            1./2 * lib.einsum("pqab, abij -> pqij", v_pqab, t2)
+
+        v_pqij = o2[:, :, :self.c_nmo, :self.c_nmo]
+        c2_dprime[:, :, self.c_nmo:, self.c_nmo:] -= \
+            1./2 * lib.einsum("pqij, abij -> pqab", v_pqij, t2)
+
+        
+        # 2-body terms resulting from single contractions in 3-body operator
+        # -4A^{ab}_{ij}g^{ip}_{qr}E^{qjr}_{abp}
+
+        # term 1 from note.
+        v_ijpk = o2[:self.c_nmo, :self.c_nmo, :, :self.c_nmo]
+        c2_dprime[:, :self.c_nmo, self.c_nmo:, self.c_nmo:] -= \
+            2. * lib.einsum("ikqk, abij -> qjab", v_ijpk, t2)
+
+        v_ijpq = o2[:self.c_nmo, :self.c_nmo, :, :]
+        c2_dprime[:, :, self.c_nmo:, self.c_nmo:] += \
+            lib.einsum("ijqr, abij -> qrab", v_ijpq, t2)
+
+        v_ijkp = o2[:self.c_nmo, :self.c_nmo, :self.c_nmo, :]
+        c2_dprime[:self.c_nmo, :, self.c_nmo:, self.c_nmo:] -= \
+            lib.einsum("ikkr, abij -> jrab", v_ijkp, t2)
+        
+        # term 3 from note
+        # 4 A^{ab}_{ij}g^{ap}_{qr}E^{ijp}_{qbr}
+        v_aijp = o2[self.c_nmo:, :self.c_nmo, :self.c_nmo, :]
+        c2_dprime[:self.c_nmo, :self.c_nmo, self.c_nmo:, :] += \
+            lib.einsum("akkr, abij -> ijbr", v_aijp, t2)
+
+        v_apiq = o2[self.c_nmo:, :, :self.c_nmo, :]
+        c2_dprime[:self.c_nmo, :, self.c_nmo:, :] -= \
+            lib.einsum("apjr, abij -> ipbr", v_apiq, t2)
+
+        v_apiq = o2[self.c_nmo:, :, :self.c_nmo, :]
+        c2_dprime[:self.c_nmo, :, self.c_nmo:, :] += \
+            2. * lib.einsum("apir, abij -> jpbr", v_apiq, t2)
+        
+        v_aipj = o2[self.c_nmo:, :self.c_nmo, :, :self.c_nmo]
+        c2_dprime[:self.c_nmo, :self.c_nmo, :, self.c_nmo:] += \
+            2. * lib.einsum("akqk, abij -> ijqb", v_aipj, t2)
+
+        v_apqi = o2[self.c_nmo:, :, :, :self.c_nmo]
+        c2_dprime[:self.c_nmo, :, :, self.c_nmo:] -= \
+            lib.einsum("apqj, abij -> ipqb", v_apqi, t2)
+
+        c2_dprime[:self.c_nmo, :, :, self.c_nmo:] += \
+            lib.einsum("apqi, abij -> jpqb", v_apqi, t2)
+        
+        c2_dprime *= 4.
+
+        c2_dprime = symmetrize(c2_dprime)
+
+        return c2_dprime
+    
+    def get_c1_prime_sr(self, o2=None):
+        """
+        Function to compute the 2D tensor associated with the 1-body operator
+        generated by [h2, T2] in single reference case
+
+        Args:
+            o2: 4D ndarray. Two-body operator to be commuted with t1.
+
+        Returns:
+            c1_prime_mn: 2D tensor. The 1-body contribution from [h2, T2]
+        """
+
+        if o2 is None:
+            o2 = self.eri
+
+        # need the original t2
+        t2 = self._t2s
+
+        c1_prime = np.zeros([self.nmo, self.nmo])
+        o2_aijk = o2[self.c_nmo:, :self.c_nmo, :self.c_nmo, :self.c_nmo]
+        o2_apij = o2[self.c_nmo:, :, :self.c_nmo, :self.c_nmo]
+
+        c1_prime[:, self.c_nmo:] -= 2.*lib.einsum("abij, apij -> pb", t2, o2_apij)
+        
+        c1_prime[:, self.c_nmo:] += lib.einsum("abij, apji -> pb", t2, o2_apij)
+
+        c1_prime[:self.c_nmo, self.c_nmo:] += 4.*lib.einsum("abij, akik -> jb", t2, o2_aijk)
+
+        c1_prime[:self.c_nmo, self.c_nmo:] -= lib.einsum("abij, akki -> jb", t2, o2_aijk)
+
+        c1_prime[:self.c_nmo, self.c_nmo:] -= 2. * lib.einsum("abij, akjk -> ib", t2, o2_aijk)
+
+        c1_prime[:self.c_nmo, self.c_nmo:] += lib.einsum("abij, akkj -> ib", t2, o2_aijk)
+
+
+        c1_prime *= 2.
+        c1_prime = symmetrize(c1_prime)
+        return c1_prime
 
     def get_hf_energy(self, c0=None, c1=None, c2=None):
         if c0 is None:
@@ -1049,7 +1197,7 @@ class CTSD(lib.StreamObject):
 
 
     
-    def create_eris(self, eris=None, c2=None):
+    def create_eris(self, fock=None, eris=None, c2=None):
         if eris is None:
             eris = _ChemistsERIs()
         if c2 is None:
@@ -1058,9 +1206,15 @@ class CTSD(lib.StreamObject):
         eris.nocc = nocc
         eris.mol = self.mol
         nvir = self.nmo - nocc
-        eris.fock = self.get_fock()
+        if fock is None:
+            eris.fock = self.get_fock()
+        else:
+            eris.fock = fock
         eris.e_hf = self.get_hf_energy()
-        eris.mo_energy = self.mo_energy
+        if fock is None:
+            eris.mo_energy = self.mo_energy
+        else:
+            eris.mo_energy = fock.diagonal()
         eris.oooo = c2[:nocc, :nocc, :nocc, :nocc].transpose(0, 2, 1, 3)
         eris.ovoo = c2[:nocc, :nocc, nocc:, :nocc].transpose(0, 2, 1, 3)
         eris.oovv = c2[:nocc, nocc:, :nocc, nocc:].transpose(0, 2, 1, 3)
@@ -1072,4 +1226,16 @@ class CTSD(lib.StreamObject):
         eris.vvvv = ao2mo.restore(1, eris.vvvv, nvir)
 
         return eris
+
+    def get_R1_prime(self):
+        pass
+
+    def get_R2_prime(self):
+        pass
+
+    def get_R1_dprime(self):
+        pass
+
+    def get_R2_dprime(self):
+        pass
 
