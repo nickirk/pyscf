@@ -169,7 +169,7 @@ def get_d_bar(dm1=None, dm2=None):
 
     d_bar = -dm2
     d_bar += 2. * lib.einsum("mn, uv -> munv", dm1, dm1)
-    d_bar -= 2. * 1. / 2 * lib.einsum("mn, vu -> muvn", dm1, dm1)
+    d_bar -= lib.einsum("mv, un -> munv", dm1, dm1)
 
     return d_bar
 
