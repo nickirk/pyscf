@@ -766,8 +766,8 @@ class CTSD(lib.StreamObject):
         return c1_prime_mn
     
     def get_c2_dprime(self, o2=None):
-        c2_dprime = self.get_c2_dprime_generic()
-        c2_dprime += self.get_c2_dprime_eno()
+        c2_dprime = self.get_c2_dprime_generic(o2)
+        c2_dprime += self.get_c2_dprime_eno(o2)
         return c2_dprime
     
     def get_c2_dprime_generic(self, o2=None):
