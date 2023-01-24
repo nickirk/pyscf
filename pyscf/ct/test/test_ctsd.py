@@ -15,7 +15,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 def setUpModule():
     global mol, mf, myct
     mol = gto.Mole()
-    mol.verbose = 7
+    mol.verbose = 3
     #mol.output = '/dev/null'
     #mol.atom = '''
     #    N  0.  0 0;
@@ -31,10 +31,12 @@ def setUpModule():
     #    H    0.000000   -0.755453   -0.471161'''
     mol.atom = '''
         H    0.000000   0   0
-        H    0.000000   0   2.0'''
+        H    0.000000   0   2.0
+        H    0.000000   0   4.0
+        H    0.000000   0   6.0'''
     mol.unit = 'A'
-    mol.basis = 'sto6g'
-    #mol.basis = 'ccpvdz'
+    #mol.basis = 'sto6g'
+    mol.basis = 'ccpvdz'
     mol.build()
     mf = scf.RHF(mol)
     #mf.chkfile = tempfile.NamedTemporaryFile().name
@@ -121,16 +123,6 @@ class KnownValues(unittest.TestCase):
         c1 = myct.get_c1(t=t1)
         pass
 
-    
-    def test_get_c1_prime(self):
-        #c1_prime = myct.get_c1_prime()
-        pass
-
-    def test_get_c2_prime(self):
-        pass
-
-    def test_get_c2_dprime(self):
-        pass
 
     def test_mp2_amps(self):
         t1, t2 = myct.get_mp2_amps()
@@ -228,6 +220,9 @@ class KnownValues(unittest.TestCase):
         
 
     def test_per_term_analysis(self):
+        print("*"*79)
+        print("eri tensor")
+        ctsd.tensor_analysis(myct.eri)
         c0, c1, c2 = myct.kernel()
         ct_hf_e = myct.get_hf_energy(c0, c1, c2)
         print("CT HF energy = ", ct_hf_e)
@@ -426,6 +421,24 @@ class KnownValues(unittest.TestCase):
         #print("CCSD total = ", mycc.e_tot)
         return mymp.e_tot
     
+    def test_c1_prime_sr_mr(self):
+        myct.amps_algo = "mp2"
+        #myct.mf.mo_energy[myct.c_nmo:] += 1
+        myct.init_amps()
+        c1_prime_sr = myct.get_c1_prime_sr(myct.eri)
+        c1_prime_mr = myct.get_c1_prime(myct.eri)
+        assert np.allclose(c1_prime_mr, c1_prime_sr)
+
+    def test_c2_dprime_sr_mr(self):
+        myct.amps_algo = "mp2"
+        #myct.mf.mo_energy[myct.c_nmo:] += 1
+        myct.init_amps()
+        eri = myct.eri.copy()
+        c2_dprime_sr = myct.get_c2_dprime_sr(eri)
+        eri = myct.eri.copy()
+        c2_dprime_mr = myct.get_c2_dprime_eno(eri)
+        assert np.allclose(c2_dprime_mr, c2_dprime_sr)
+    
     def test_ct_mp2_sr_mr(self):
         myct.amps_algo = "mp2"
         #myct.mf.mo_energy[myct.c_nmo:] += 1
@@ -453,6 +466,7 @@ class KnownValues(unittest.TestCase):
         ct_hf_mr = myct.get_hf_energy(0, c1_mr, c2_mr)
 
         # construct fock for mr
+        c1_mr = ctsd.symmetrize(c1_mr)
         fock_mr = c1_mr.copy()
         fock_mr += 2. * np.einsum("piqi -> pq", c2_mr[:, :myct.c_nmo, :, :myct.c_nmo])
         fock_mr -= np.einsum("piiq -> pq", c2_mr[:, :myct.c_nmo, :myct.c_nmo, :])
@@ -489,19 +503,22 @@ class KnownValues(unittest.TestCase):
 
         #construct fock
         c1_sr += c1_prime_sr
+        c1_sr = ctsd.symmetrize(c1_sr)
 
         fock_sr = c1_sr.copy()
         fock_sr += 2. * np.einsum("piqi -> pq", c2_sr[:, :myct.c_nmo, :, :myct.c_nmo])
         fock_sr -= np.einsum("piiq -> pq", c2_sr[:, :myct.c_nmo, :myct.c_nmo, :])
 
-        assert np.allclose(fock_mr, fock_sr)
 
-        #assert np.allclose(fock_mr, fock_sr)
-        c2_sr += c2_dprime_mr
+        assert np.allclose(fock_mr, fock_sr)
+        c2_sr += c2_dprime_sr
         c2_sr -= c2_generic
 
         c2_sr_vvoo = c2_sr[myct.c_nmo:, myct.c_nmo:, :myct.c_nmo, :myct.c_nmo]
         c2_mr_vvoo = c2_mr[myct.c_nmo:, myct.c_nmo:, :myct.c_nmo, :myct.c_nmo]
+
+        #assert np.allclose(c2_sr_vvoo, c2_mr_vvoo)
+        #assert np.allclose(c2_sr, c2_mr)
 
         ct_mo_energy = fock_sr.diagonal()
         e_ia = -(ct_mo_energy[myct.c_nmo:, None] \
@@ -530,9 +547,38 @@ class KnownValues(unittest.TestCase):
         can_mp2_e = mycc.emp2 + mycc.e_hf
         can_cc_e = mycc.e_tot
         print("*"*79)
+        print("SR")
+        print("*"*79)
         print("Canonical CCSD e tot = ", can_cc_e)
+        print("Canonical mp2 e tot = ", can_mp2_e)
         print("CT HF e = ", ct_hf_sr)
-        print("ct mp2 corr =", ct_mp2_e)
+        print("ct mp2 corr =", myct_cc.emp2)
+        print("ct mp2 total =", ct_mp2_total)
+        print("CT CCSD e tot = ", ct_cc_e)
+        print("CT CCSD e corr = ", myct_cc.e_corr)
+        print("END")
+
+        eris_mr = myct.create_eris(fock=fock_mr, c2=c2_mr)
+
+        myct_cc = cc.ccsd.CCSD(mf)
+        #myct_cc.max_cycle = 1
+        myct_cc.kernel(eris=eris_mr)
+        ct_cc_e = myct_cc.e_tot
+        ct_mp2_e = myct_cc.emp2 + ct_hf_sr
+
+        mycc = cc.CCSD(mf)
+        #mycc.max_cycle = 1
+        mycc.kernel()
+
+        can_mp2_e = mycc.emp2 + mycc.e_hf
+        can_cc_e = mycc.e_tot
+        print("*"*79)
+        print("MR")
+        print("*"*79)
+        print("Canonical CCSD e tot = ", can_cc_e)
+        print("Canonical mp2 e tot = ", can_mp2_e)
+        print("CT HF e = ", ct_hf_sr)
+        print("ct mp2 corr =", myct_cc.emp2)
         print("ct mp2 total =", ct_mp2_total)
         print("CT CCSD e tot = ", ct_cc_e)
         print("CT CCSD e corr = ", myct_cc.e_corr)
