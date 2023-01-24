@@ -832,76 +832,46 @@ class CTSD(lib.StreamObject):
         # first term in equation 48
         
         # second term in equ 48
+        # term 2 in note e"
         v_mxni = o2[:, self.t_nmo:, :, :self.c_nmo]
         c2_dprime_mnuv[:, :self.t_nmo, :, self.t_nmo:] += \
             lib.einsum("mxni, xyip -> mpny", v_mxni, cap_t0_xyip)
 
-        c2_tmp = lib.einsum("mxni, xyip -> mpny", v_mxni, cap_t0_xyip)
 
-        # term 2 in note e"
-        v_apjr = o2[self.c_nmo:, :, :self.c_nmo, :]
-        c2_tmp_sr = 2. * lib.einsum("abij, apir -> jpbr", t2, v_apjr)
-        assert np.allclose(c2_tmp, c2_tmp_sr.transpose((1,0,3,2)))
-
+        # term 6 in note e"
         c2_dprime_mnuv[:, :self.t_nmo, :, self.t_nmo:] -= \
             1. / 2 * lib.einsum("mxni, yxip -> mpny", v_mxni, cap_t0_xyip)
 
-        c2_tmp = -1. / 2 * lib.einsum("mxni, yxip -> mpny", v_mxni, cap_t0_xyip)
-        # term 6 in note e"
-        v_apjr = o2[self.c_nmo:, :, :self.c_nmo, :]
-        c2_tmp_sr = -lib.einsum("abij, apjr -> ipbr", t2, v_apjr)
-        assert np.allclose(c2_tmp, c2_tmp_sr.transpose((1,0,3,2)))
 
+        # term 5 in note e"
         v_mxin = o2[:, self.t_nmo:, :self.c_nmo, :]
         c2_dprime_mnuv[:, :self.t_nmo, :, self.t_nmo:] -= \
             1. / 2 * lib.einsum("mxin, xyip -> mpny", v_mxin, cap_t0_xyip)
 
-        c2_tmp = -1. / 2 * lib.einsum("mxin, xyip -> mpny", v_mxin, cap_t0_xyip)
-        # term 5 in note e"
-        v_apqi = o2[self.c_nmo:, :, :, :self.c_nmo]
-        c2_tmp_sr = lib.einsum("abij, apqi -> jpqb", t2, v_apqi)
-        assert np.allclose(c2_tmp, -c2_tmp_sr.transpose((1,0,2,3)))
 
         # third term in equ 48
+        # term 4 in note e"
         c2_dprime_mnuv[:, :self.t_nmo, self.t_nmo:, :] -= \
             1. / 2 * lib.einsum("mxin, yxip -> mpyn", v_mxin, cap_t0_xyip)
 
-        c2_tmp = -1. / 2 * lib.einsum("mxin, yxip -> mpyn", v_mxin, cap_t0_xyip)
-        #v_apqi = o2[self.c_nmo:, :, :, :self.c_nmo]
-        # term 4 in note e"
-        c2_tmp_sr = -lib.einsum("abij, apqj -> ipqb", t2, v_apqi)
-        assert np.allclose(c2_tmp, c2_tmp_sr.transpose((1,0,3,2)))
 
         # fourth term in equ 48
         v_mnxi = o2[:, :, self.t_nmo:, :self.c_nmo]
         c2_dprime_mnuv[:, :, :self.t_nmo, :self.t_nmo] -= \
             1. / 2 * lib.einsum("mnxi, ixpq -> mnqp", v_mnxi, cap_t1_ixpq)
         
-        c2_tmp = -1./2 * lib.einsum("mnxi, ixpq -> mnqp", v_mnxi, cap_t1_ixpq)
-        assert np.allclose(c2_tmp, np.zeros(c2_tmp.shape))
 
         # fifth term in equ 48
         v_mnxu = o2[:, :, self.t_nmo:, :]
         c2_dprime_mnuv[:, :, :self.t_nmo, :] += \
             lib.einsum("mnxu, xp -> mnpu", v_mnxu, cap_t2_xp)
 
-        c2_tmp = lib.einsum("mnxu, xp -> mnpu", v_mnxu, cap_t2_xp)
-        assert np.allclose(c2_tmp, np.zeros(c2_tmp.shape))
-
         # sixth term in equ 48
+        # term 1 + 3 in note e"
         c2_dprime_mnuv[:, self.t_nmo:, :self.t_nmo, :self.t_nmo] += \
             lib.einsum("xypq, mx -> mypq", t2,
                         cap_t3_mn[:, self.t_nmo:])
 
-        c2_tmp = lib.einsum("xypq, mx -> mypq", t2,
-                        cap_t3_mn[:, self.t_nmo:])
-        
-        # term 1 + 3 in note e"
-        v_aipj = o2[self.c_nmo:, :self.c_nmo, :, :self.c_nmo]
-        c2_tmp_sr = 2. * lib.einsum("abij, akqk -> ijqb", t2, v_aipj)
-        v_aijp = o2[self.c_nmo:, :self.c_nmo, :self.c_nmo, :]
-        c2_tmp_sr -= lib.einsum("abij, akkr -> ijrb", t2, v_aijp)
-        assert np.allclose(c2_tmp, c2_tmp_sr.transpose((2,3,0,1)))
 
         # adding contributions from a_dprime_mnuv, notice the overall - sign
         # second term in equ 49
@@ -913,55 +883,26 @@ class CTSD(lib.StreamObject):
         v_mpin = o2[:, :self.t_nmo, :self.c_nmo, :]
         c2_dprime_mnuv[:, self.t_nmo:, :, :self.t_nmo] += \
             1. / 2 * lib.einsum("mpin, ixpq -> mxnq", v_mpin, cap_t1_ixpq)
-        
-        c2_tmp = lib.einsum("mpni, ixpq -> mxnq", v_mpni, cap_t1_ixpq)
-        c2_tmp += 1. / 2 * lib.einsum("mpni, ixpq -> mxnq", v_mpni, cap_t1_ixpq)
-        c2_tmp += 1. / 2 * lib.einsum("mpin, ixpq -> mxnq", v_mpin, cap_t1_ixpq)
-
-        assert np.allclose(c2_tmp, np.zeros(c2_tmp.shape))
 
         # third term in equ 49
         c2_dprime_mnuv[:, self.t_nmo:, :self.t_nmo, :] += \
             1. / 2 * lib.einsum("mpin, ixqp -> mxqn", v_mpin, cap_t1_ixpq)
 
-        c2_tmp = 1. / 2 * lib.einsum("mpin, ixqp -> mxqn", v_mpin, cap_t1_ixpq)
-        assert np.allclose(c2_tmp, np.zeros(c2_tmp.shape))
 
         # fourth term in equ 49
         v_mnpi = o2[:, :, :self.t_nmo, :self.c_nmo]
         c2_dprime_mnuv[:, :, self.t_nmo:, self.t_nmo:] += \
             1. / 2 * lib.einsum("mnpi, xyip -> mnyx", v_mnpi, cap_t0_xyip)
         
-        c2_tmp = 1. / 2 * lib.einsum("mnpi, xyip -> mnyx", v_mnpi, cap_t0_xyip)
-        v_ijpq = o2[:self.c_nmo, :self.c_nmo, :, :]
-        # term 3 in a"
-        c2_tmp_sr = lib.einsum("abij, ijqp -> qpab", t2, v_ijpq)
-        assert np.allclose(c2_tmp, c2_tmp_sr)
-
         # fifth term in equ 49
         v_mnpu = o2[:, :, :self.t_nmo, :]
         c2_dprime_mnuv[:, :, self.t_nmo:, :] -= \
             lib.einsum("mnpu, xp -> mnxu", v_mnpu, cap_t2_xp)
 
-        c2_tmp = lib.einsum("mnpu, xp -> mnxu", v_mnpu, cap_t2_xp)
-        assert np.allclose(c2_tmp, np.zeros(c2_tmp.shape))
-
         # sixth term in equ 49
         c2_dprime_mnuv[:, :self.t_nmo, self.t_nmo:,
         self.t_nmo:] -= lib.einsum("xypq, mp -> mqxy", t2,
                                    cap_t3_mn[:, :self.t_nmo])
-        
-        c2_tmp = -lib.einsum("xypq, mp -> mqxy", t2,
-                             cap_t3_mn[:, :self.t_nmo])
-
-        v_ijpk = o2[:self.c_nmo, :self.c_nmo, :, :self.c_nmo]
-        v_ijkp = o2[:self.c_nmo, :self.c_nmo, :self.c_nmo, :]
-        v_pijk = o2[:, :self.c_nmo, :self.c_nmo, :self.c_nmo]
-        # term 1 in note a"
-        c2_tmp_sr = -2. * lib.einsum("abij, ikqk -> qjab", t2, v_ijpk)
-        # term 2 in note a"
-        c2_tmp_sr += lib.einsum("abij, pkki -> pjab", t2, v_pijk)
-        assert np.allclose(c2_tmp, c2_tmp_sr)
 
         c2_dprime_mnuv *= 4.
 
@@ -991,90 +932,56 @@ class CTSD(lib.StreamObject):
         # -4A^{ab}_{ij}g^{ip}_{qr}E^{qjr}_{abp}
 
         # term 1 from note.
+        # term 1 in note a"
         v_ijpk = o2[:self.c_nmo, :self.c_nmo, :, :self.c_nmo]
         c2_dprime[:, :self.c_nmo, self.c_nmo:, self.c_nmo:] -= \
             2. * lib.einsum("ikqk, abij -> qjab", v_ijpk, t2)
         
-        c2_delta = -2. * lib.einsum("ikqk, abij -> qjab", v_ijpk, t2)
 
-        # term 1 in note a"
-        v_ijpk = o2[:self.c_nmo, :self.c_nmo, :, :self.c_nmo]
-        c2_tmp_sr = -2. * lib.einsum("abij, ikqk -> qjab", t2, v_ijpk)
-        assert np.allclose(c2_delta, c2_tmp_sr)
-
-
+        # term 3 in a"
         v_ijpq = o2[:self.c_nmo, :self.c_nmo, :, :]
         c2_dprime[:, :, self.c_nmo:, self.c_nmo:] += \
             lib.einsum("ijqr, abij -> qrab", v_ijpq, t2)
 
-        c2_delta = lib.einsum("ijqr, abij -> qrab", v_ijpq, t2)
-        # term 3 in a"
-        c2_tmp_sr = lib.einsum("abij, ijqp -> qpab", t2, v_ijpq)
-        assert np.allclose(c2_delta, c2_tmp_sr)
-
-        v_ijkp = o2[:self.c_nmo, :self.c_nmo, :self.c_nmo, :]
-        c2_dprime[:self.c_nmo, :, self.c_nmo:, self.c_nmo:] -= \
-            lib.einsum("ikkr, abij -> jrab", v_ijkp, t2)
-        c2_delta = -lib.einsum("ikkr, abij -> jrab", v_ijkp, t2)
 
         # term 2 in note a"
         v_ijkp = o2[:self.c_nmo, :self.c_nmo, :self.c_nmo, :]
-        c2_tmp_sr = -lib.einsum("abij, ikkr -> rjab", t2, v_ijkp)
-        assert np.allclose(c2_delta, c2_tmp_sr.transpose((1,0,2,3)))
+        c2_dprime[:, :self.c_nmo, self.c_nmo:, self.c_nmo:] += \
+            lib.einsum("ikkr, abij -> rjab", v_ijkp, t2)
+
         
         # term 3 from note
         # 4 A^{ab}_{ij}g^{ap}_{qr}E^{ijp}_{qbr}
+        # term 3 in e"
         v_aijp = o2[self.c_nmo:, :self.c_nmo, :self.c_nmo, :]
-        c2_dprime[:self.c_nmo, :self.c_nmo, self.c_nmo:, :] += \
-            lib.einsum("akkr, abij -> ijbr", v_aijp, t2)
-        
-        c2_delta = lib.einsum("akkr, abij -> ijbr", v_aijp, t2)
+        c2_dprime[:self.c_nmo, :self.c_nmo, :, self.c_nmo:] -= \
+            lib.einsum("akkr, abij -> ijrb", v_aijp, t2)
 
-        v_aijp = o2[self.c_nmo:, :self.c_nmo, :self.c_nmo, :]
-        c2_tmp_sr = lib.einsum("abij, akkr -> ijrb", t2, v_aijp)
-        assert np.allclose(c2_delta, c2_tmp_sr.transpose(0,1,3,2))
-
+        # term 6 in note e"
         v_apiq = o2[self.c_nmo:, :, :self.c_nmo, :]
         c2_dprime[:self.c_nmo, :, self.c_nmo:, :] -= \
             lib.einsum("apjr, abij -> ipbr", v_apiq, t2)
-        c2_delta = -lib.einsum("apjr, abij -> ipbr", v_apiq, t2)
 
-        # term 6 in note e"
-        v_apjr = o2[self.c_nmo:, :, :self.c_nmo, :]
-        c2_tmp_sr = -lib.einsum("abij, apjr -> ipbr", t2, v_apjr)
-        assert np.allclose(c2_delta, c2_tmp_sr)
 
+        # term 2 in note e"
         v_apiq = o2[self.c_nmo:, :, :self.c_nmo, :]
         c2_dprime[:self.c_nmo, :, self.c_nmo:, :] += \
             2. * lib.einsum("apir, abij -> jpbr", v_apiq, t2)
-        c2_delta = 2. * lib.einsum("apir, abij -> jpbr", v_apiq, t2)
-
         
-        # term 2 in note e"
-        v_apjr = o2[self.c_nmo:, :, :self.c_nmo, :]
-        c2_tmp_sr = 2. * lib.einsum("abij, apir -> jpbr", t2, v_apjr)
-        assert np.allclose(c2_tmp_sr, c2_delta)
-
+        # term 1 in note e"
         v_aipj = o2[self.c_nmo:, :self.c_nmo, :, :self.c_nmo]
         c2_dprime[:self.c_nmo, :self.c_nmo, :, self.c_nmo:] += \
             2. * lib.einsum("akqk, abij -> ijqb", v_aipj, t2)
-        c2_delta = 2. * lib.einsum("akqk, abij -> ijqb", v_aipj, t2)
 
-        v_aipj = o2[self.c_nmo:, :self.c_nmo, :, :self.c_nmo]
-        c2_tmp_sr = 2. * lib.einsum("abij, akqk -> ijqb", t2, v_aipj)
-        assert np.allclose(c2_tmp_sr, c2_delta)
-
+        # term 4 in note e"
         v_apqi = o2[self.c_nmo:, :, :, :self.c_nmo]
         c2_dprime[:self.c_nmo, :, :, self.c_nmo:] -= \
             lib.einsum("apqj, abij -> ipqb", v_apqi, t2)
 
-        c2_dprime[:self.c_nmo, :, :, self.c_nmo:] += \
-            lib.einsum("apqi, abij -> jpqb", v_apqi, t2)
-        c2_delta = lib.einsum("apqi, abij -> jpqb", v_apqi, t2)
         # term 5 in note e"
-        v_apqi = o2[self.c_nmo:, :, :, :self.c_nmo]
-        c2_tmp_sr = lib.einsum("abij, apqi -> jpqb", t2, v_apqi)
-        assert np.allclose(c2_delta, c2_tmp_sr)
+        c2_dprime[:, :self.c_nmo, :, self.c_nmo:] -= \
+            lib.einsum("apqi, abij -> pjqb", v_apqi, t2)
+        
         
         c2_dprime *= 4.
 
