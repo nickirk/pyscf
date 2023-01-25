@@ -254,7 +254,7 @@ class CTSD(lib.StreamObject):
         if dm1 is None or dm2 is None:
             dm1 = np.diag(self.mf.mo_occ)
             dm2 = (np.einsum('ij, kl -> ikjl', dm1, dm1) - np.einsum(
-                'ij, kl -> iklj', dm1, dm1) / 2)
+                'il, kj -> ikjl', dm1, dm1) / 2)
         self.dm1 = dm1
         self.dm2 = dm2
 
@@ -291,8 +291,15 @@ class CTSD(lib.StreamObject):
         # initialize the amplitudes
         if "amps_algo" in kwargs:
             self.amps_algo = kwargs["amps_algo"]
-        
-        self.t1, self.t2 = self.init_amps()
+        if "t1" in kwargs:
+            t1 = kwargs["t1"] 
+        else:
+            t1 = None
+        if "t2" in kwargs:
+            t2 = kwargs["t2"] 
+        else:
+            t2 = None
+        self.t1, self.t2 = self.init_amps(t1, t2)
 
          
 
@@ -329,7 +336,7 @@ class CTSD(lib.StreamObject):
         return self.ct_0, self.ct_o1, self.ct_o2
 
 
-    def init_amps(self):
+    def init_amps(self, t1=None, t2=None):
         """
         Get the transformaiton amplitudes.
 
@@ -340,14 +347,19 @@ class CTSD(lib.StreamObject):
 
         """
         # self.part_amps()
-        self.t1, self.t2 = self.get_amps()
-        print("Using "+self._amps_algo+" amps...")
-        # assign t1 and t2 partitions to _t1s and _t2s big arrays.
-        # whenever self.t1 and self.t2 are updated, _t1s and _t2s should also be
-        # updated. FIXME: this is not the ideal way to do things, because it is
-        # error prone and takes additional memory. (But it is convenient to implement
-        # things this way.)
-        self.collect_amps()
+        if t1 is None or t2 is None:
+            print("Using "+self._amps_algo+" amps...")
+            self.t1, self.t2 = self.get_amps()
+            # assign t1 and t2 partitions to _t1s and _t2s big arrays.
+            # whenever self.t1 and self.t2 are updated, _t1s and _t2s should also be
+            # updated. FIXME: this is not the ideal way to do things, because it is
+            # error prone and takes additional memory. (But it is convenient to implement
+            # things this way.)
+            self.collect_amps()
+        else:
+            print("Using user provided amplitudes...")
+            self._t1s, self._t2s = t1, t2
+            self.t1, self.t2 = self.part_amps()
         return self.t1, self.t2
 
     def get_amps(self):
@@ -464,8 +476,8 @@ class CTSD(lib.StreamObject):
         c2_prime = self.get_c2_prime(o2)
 
         c0 = self.get_c0(o2)
-        c1_prime = self.get_c1_prime(o2)
-        #c1_prime = self.get_c1_prime_sr(o2)
+        #c1_prime = self.get_c1_prime(o2)
+        c1_prime = -self.get_c1_prime_sr(o2)
         c2_dprime = self.get_c2_dprime(o2)
         #c2_dprime = self.get_c2_dprime_sr(o2)
 
@@ -1018,8 +1030,10 @@ class CTSD(lib.StreamObject):
         c1_prime[:self.c_nmo, self.c_nmo:] += 4.*lib.einsum("abij, akik -> jb", t2, o2_aijk)
 
         c1_prime[:self.c_nmo, self.c_nmo:] -= lib.einsum("abij, akki -> jb", t2, o2_aijk)
+        #c1_prime[:self.c_nmo, self.c_nmo:] -= 2. * lib.einsum("abij, akki -> jb", t2, o2_aijk)
 
         c1_prime[:self.c_nmo, self.c_nmo:] -= 2. * lib.einsum("abij, akjk -> ib", t2, o2_aijk)
+        #c1_prime[:self.c_nmo, self.c_nmo:] -= lib.einsum("abij, akjk -> ib", t2, o2_aijk)
 
         c1_prime[:self.c_nmo, self.c_nmo:] += lib.einsum("abij, akkj -> ib", t2, o2_aijk)
 

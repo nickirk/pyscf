@@ -4,7 +4,7 @@ import numpy as np
 from pyscf import gto, scf, lib
 from pyscf import ct, mp, ao2mo
 from pyscf.ct import ctsd
-from pyscf import cc
+from pyscf import cc, fci
 from pyscf.cc import ccsd
 
 import os
@@ -17,10 +17,10 @@ def setUpModule():
     mol = gto.Mole()
     mol.verbose = 3
     #mol.output = '/dev/null'
-    #mol.atom = '''
-    #    N  0.  0 0;
-    #    N  0.  0 1.09768;
-    #    '''
+    mol.atom = '''
+        N  0.  0 0;
+        N  0.  0 1.09768;
+        '''
     #mol.atom = '''
     #    F  0.  0 0;
     #    F  0.  0 2.0;
@@ -29,20 +29,21 @@ def setUpModule():
     #    O    0.000000    0.000000    0.117790
     #    H    0.000000    0.755453   -0.471161
     #    H    0.000000   -0.755453   -0.471161'''
-    mol.atom = '''
-        H    0.000000   0   0
-        H    0.000000   0   2.0
-        H    0.000000   0   4.0
-        H    0.000000   0   6.0'''
+    #mol.atom = '''
+    #    H    0.000000   0   0
+    #    H    0.000000   0   1.40
+    #    H    0.000000   0   2.8
+    #    H    0.000000   0   4.20'''
     mol.unit = 'A'
-    #mol.basis = 'sto6g'
-    mol.basis = 'ccpvdz'
+    mol.basis = 'sto6g'
+    #mol.basis = 'ccpvdz'
     mol.build()
     mf = scf.RHF(mol)
     #mf.chkfile = tempfile.NamedTemporaryFile().name
     mf.conv_tol_grad = 1e-8
     mf.kernel()
-
+    cisolver = fci.FCI(mf)
+    print('E(FCI) = %.12f' % cisolver.kernel()[0])
     # active space is set to 0. The reference energy of the
     # CT Ham should reproduce MP2 energy
     myct = ctsd.CTSD(mf, a_nmo=0)
@@ -586,15 +587,16 @@ class KnownValues(unittest.TestCase):
 
 
     def test_ct_ccsd(self):
-        myct.amps_algo = "mp2"
-        c0, c1, c2 = myct.kernel()
+        #myct.amps_algo = "mp2"
+        mycc = cc.CCSD(mf)
+        #mycc.max_cycle = 1
+        mycc.kernel()
+        #c0, c1, c2 = myct.kernel(t1=np.zeros([myct.nmo-myct.c_nmo, myct.c_nmo]), t2=mycc.t2.transpose((2,3,0,1)))
+        c0, c1, c2 = myct.kernel(t1=mycc.t1.T, t2=mycc.t2.transpose((2,3,0,1)))
         #myct.canonicalize()
         ct_hf_e = myct.get_hf_energy()
         print("CT HF energy = ", ct_hf_e)
         
-        mycc = cc.CCSD(mf)
-        #mycc.max_cycle = 1
-        mycc.kernel()
 
         can_mp2_e = mycc.emp2 + mycc.e_hf
         can_cc_e = mycc.e_tot
@@ -608,11 +610,13 @@ class KnownValues(unittest.TestCase):
         ct_mp2_e = myct_cc.emp2 + ct_hf_e
         print("Canonical MP2 e tot = ", can_mp2_e)
         print("Canonical CCSD e tot = ", can_cc_e)
+        print("Canonical CCSD e corr = ", mycc.e_corr)
         print("CT HF e = ", ct_hf_e)
         print("CT MP2 e tot = ", ct_mp2_e)
         print("CT MP2 e corr = ", myct_cc.emp2)
         print("CT CCSD e tot = ", ct_cc_e)
         print("CT CCSD e corr = ", myct_cc.e_corr)
+        print("CT CCSD e corr + can HF = ", myct_cc.e_corr+mycc.e_hf)
         print("END")
 
 
