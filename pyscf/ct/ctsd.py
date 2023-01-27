@@ -348,8 +348,8 @@ class CTSD(lib.StreamObject):
         """
         # self.part_amps()
         if t1 is None or t2 is None:
-            print("Using "+self._amps_algo+" amps...")
             self.t1, self.t2 = self.get_amps()
+            print("Using "+self._amps_algo+" amps...")
             # assign t1 and t2 partitions to _t1s and _t2s big arrays.
             # whenever self.t1 and self.t2 are updated, _t1s and _t2s should also be
             # updated. FIXME: this is not the ideal way to do things, because it is
@@ -476,8 +476,8 @@ class CTSD(lib.StreamObject):
         c2_prime = self.get_c2_prime(o2)
 
         c0 = self.get_c0(o2)
-        #c1_prime = self.get_c1_prime(o2)
-        c1_prime = -self.get_c1_prime_sr(o2)
+        c1_prime = self.get_c1_prime(o2)
+        #c1_prime = self.get_c1_prime_sr(o2)
         c2_dprime = self.get_c2_dprime(o2)
         #c2_dprime = self.get_c2_dprime_sr(o2)
 
