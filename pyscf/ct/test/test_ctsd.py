@@ -17,10 +17,10 @@ def setUpModule():
     mol = gto.Mole()
     mol.verbose = 3
     #mol.output = '/dev/null'
-    mol.atom = '''
-        N  0.  0 0;
-        N  0.  0 1.09768;
-        '''
+    #mol.atom = '''
+    #    N  0.  0 0;
+    #    N  0.  0 1.09768;
+    #    '''
     #mol.atom = '''
     #    F  0.  0 0;
     #    F  0.  0 2.0;
@@ -29,11 +29,11 @@ def setUpModule():
     #    O    0.000000    0.000000    0.117790
     #    H    0.000000    0.755453   -0.471161
     #    H    0.000000   -0.755453   -0.471161'''
-    #mol.atom = '''
-    #    H    0.000000   0   0
-    #    H    0.000000   0   1.40
-    #    H    0.000000   0   2.8
-    #    H    0.000000   0   4.20'''
+    mol.atom = '''
+        H    0.000000   0   0
+        H    0.000000   0   1.40
+        H    0.000000   0   2.8
+        H    0.000000   0   4.20'''
     mol.unit = 'A'
     mol.basis = 'sto6g'
     #mol.basis = 'ccpvdz'
@@ -428,7 +428,20 @@ class KnownValues(unittest.TestCase):
         myct.init_amps()
         c1_prime_sr = myct.get_c1_prime_sr(myct.eri)
         c1_prime_mr = myct.get_c1_prime(myct.eri)
-        assert np.allclose(c1_prime_mr, c1_prime_sr)
+
+        c2_dprime_mr = myct.get_c2_dprime_eno(myct.eri)
+        c1_prime_ctr_mr = 2.*np.einsum("piqi -> pq", c2_dprime_mr[:, :myct.c_nmo, :, :myct.c_nmo])
+        c1_prime_ctr_mr -= np.einsum("piiq -> pq", c2_dprime_mr[:, :myct.c_nmo, :myct.c_nmo, :])
+        c1_prime_ctr_mr *= 0.5
+
+        c2_dprime_sr = myct.get_c2_dprime_sr(myct.eri)
+        c1_prime_ctr_sr = 2.*np.einsum("piqi -> pq", c2_dprime_sr[:, :myct.c_nmo, :, :myct.c_nmo])
+        c1_prime_ctr_sr -= np.einsum("piiq -> pq", c2_dprime_sr[:, :myct.c_nmo, :myct.c_nmo, :])
+        c1_prime_ctr_sr *= 0.5
+
+        assert np.allclose(c1_prime_ctr_mr, -c1_prime_mr)
+        assert np.allclose(c1_prime_ctr_sr, -c1_prime_mr)
+        assert np.allclose(c1_prime_ctr_sr, c1_prime_sr)
 
     def test_c2_dprime_sr_mr(self):
         myct.amps_algo = "mp2"
@@ -488,15 +501,7 @@ class KnownValues(unittest.TestCase):
         c2_sr += myct.eri
 
         v_pqab = myct.eri[:, :, myct.c_nmo:, myct.c_nmo:]
-        c2_generic = np.zeros(c2_sr.shape)
-        c2_generic[:, :, :myct.c_nmo, :myct.c_nmo] = \
-            1./2 * lib.einsum("pqab, abij -> pqij", v_pqab, myct._t2s)
-
-        v_pqij = myct.eri[:, :, :myct.c_nmo, :myct.c_nmo]
-        c2_generic[:, :, myct.c_nmo:, myct.c_nmo:] -= \
-            1./2 * lib.einsum("pqij, abij -> pqab", v_pqij, myct._t2s)
-        c2_generic *= 4. 
-        c2_generic = ctsd.symmetrize(c2_generic)
+        c2_generic = myct.get_c2_dprime_generic()
         c2_sr += c2_generic
         
         ct_hf_sr = myct.get_hf_energy(0, c1_sr, c2_sr)
@@ -592,8 +597,9 @@ class KnownValues(unittest.TestCase):
         #mycc.max_cycle = 1
         mycc.kernel()
         #c0, c1, c2 = myct.kernel(t1=np.zeros([myct.nmo-myct.c_nmo, myct.c_nmo]), t2=mycc.t2.transpose((2,3,0,1)))
-        c0, c1, c2 = myct.kernel(t1=mycc.t1.T, t2=mycc.t2.transpose((2,3,0,1)))
+        #c0, c1, c2 = myct.kernel(t1=mycc.t1.T, t2=mycc.t2.transpose((2,3,0,1)))
         #myct.canonicalize()
+        myct.kernel()
         ct_hf_e = myct.get_hf_energy()
         print("CT HF energy = ", ct_hf_e)
         

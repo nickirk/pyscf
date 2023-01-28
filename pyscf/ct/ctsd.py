@@ -416,7 +416,41 @@ class CTSD(lib.StreamObject):
 
 
         return self.t1, self.t2
+    def get_reg_mp2_amps(self):
 
+        fock_mn = self.mf.get_fock()
+        fock_mn = self.ao2mo(fock_mn)
+
+        mo_e_i = self.mf.mo_energy[:self.c_nmo]
+        # if regularization is needed, one can do it here.
+        mo_e_a = self.mf.mo_energy[self.c_nmo:self.t_nmo]
+        mo_e_x = self.mf.mo_energy[self.t_nmo:]
+
+        e_xi = -(mo_e_x[:, None] - mo_e_i[None, :])
+        e_xa = -(mo_e_x[:, None] - mo_e_a[None, :])
+
+        self.t1["xi"] = fock_mn[self.t_nmo:, :self.c_nmo].copy()
+        self.t1["xa"] = fock_mn[self.t_nmo:, self.c_nmo:self.t_nmo].copy()
+
+        self.t2["xyab"] = self.eri[self.t_nmo:, self.t_nmo:,
+                        self.c_nmo:self.t_nmo:, self.c_nmo:self.t_nmo].copy()
+        self.t2["xyij"] = self.eri[self.t_nmo:, self.t_nmo:, :self.c_nmo,
+                               :self.c_nmo].copy()
+        self.t2["xyai"] = self.eri[self.t_nmo:, self.t_nmo:,
+                          self.c_nmo:self.t_nmo, :self.c_nmo].copy()
+
+        self.t1["xi"] /= e_xi
+        self.t1["xa"] /= e_xa
+        delta_xyab = lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
+        delta_xyij = lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
+        delta_xyai = lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
+        sigma = 0.01
+
+        self.t2["xyab"] *= 1. / delta_xyab * (1. - np.exp(-sigma * delta_xyab**2)) 
+        self.t2["xyij"] *= 1. / delta_xyij * (1. - np.exp(-sigma * delta_xyij**2)) 
+        self.t2["xyai"] *= 1. / delta_xyai * (1. - np.exp(-sigma * delta_xyai**2)) 
+
+        return self.t1, self.t2
     def get_f12_amps(self):
         raise NotImplementedError
 
@@ -477,9 +511,7 @@ class CTSD(lib.StreamObject):
 
         c0 = self.get_c0(o2)
         c1_prime = self.get_c1_prime(o2)
-        #c1_prime = self.get_c1_prime_sr(o2)
         c2_dprime = self.get_c2_dprime(o2)
-        #c2_dprime = self.get_c2_dprime_sr(o2)
 
 
         return c0, c1_prime, c2_prime, c2_dprime
@@ -1029,8 +1061,8 @@ class CTSD(lib.StreamObject):
 
         c1_prime[:self.c_nmo, self.c_nmo:] += 4.*lib.einsum("abij, akik -> jb", t2, o2_aijk)
 
-        c1_prime[:self.c_nmo, self.c_nmo:] -= lib.einsum("abij, akki -> jb", t2, o2_aijk)
-        #c1_prime[:self.c_nmo, self.c_nmo:] -= 2. * lib.einsum("abij, akki -> jb", t2, o2_aijk)
+        #c1_prime[:self.c_nmo, self.c_nmo:] -= lib.einsum("abij, akki -> jb", t2, o2_aijk)
+        c1_prime[:self.c_nmo, self.c_nmo:] -= 2. * lib.einsum("abij, akki -> jb", t2, o2_aijk)
 
         c1_prime[:self.c_nmo, self.c_nmo:] -= 2. * lib.einsum("abij, akjk -> ib", t2, o2_aijk)
         #c1_prime[:self.c_nmo, self.c_nmo:] -= lib.einsum("abij, akjk -> ib", t2, o2_aijk)
