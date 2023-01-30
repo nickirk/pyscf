@@ -366,6 +366,8 @@ class CTSD(lib.StreamObject):
         if self._amps_algo == "mp2" or self._amps_algo is None:
             self._amps_algo = 'mp2'
             return self.get_mp2_amps()
+        elif self._amps_algo == "reg_mp2":
+            return self.get_reg_mp2_amps()
         elif self._amps_algo == "zero":
             return self.get_zero_amps()
         else:
@@ -416,6 +418,7 @@ class CTSD(lib.StreamObject):
 
 
         return self.t1, self.t2
+
     def get_reg_mp2_amps(self):
 
         fock_mn = self.mf.get_fock()
@@ -444,7 +447,7 @@ class CTSD(lib.StreamObject):
         delta_xyab = lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
         delta_xyij = lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
         delta_xyai = lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
-        sigma = 0.01
+        sigma = 0.05
 
         self.t2["xyab"] *= 1. / delta_xyab * (1. - np.exp(-sigma * delta_xyab**2)) 
         self.t2["xyij"] *= 1. / delta_xyij * (1. - np.exp(-sigma * delta_xyij**2)) 
