@@ -625,6 +625,9 @@ class KnownValues(unittest.TestCase):
         print("CT CCSD e corr + can HF = ", myct_cc.e_corr+mycc.e_hf)
         print("END")
 
+    def test_iterative_h_bar(self):
+        myct.kernel(iterative=True)
+
 
 if __name__ == "__main__":
     print("Full Tests for CT")

@@ -195,7 +195,7 @@ class CTSD(lib.StreamObject):
 
     def __init__(self, mf,
                  a_nmo=None, mo_coeff=None, mo_occ=None,
-                 dm1=None, dm2=None, eri=None):
+                 dm1=None, dm2=None, h_core=None, fock=None, eri=None):
         """
         mf: mean field object.
         """
@@ -231,6 +231,8 @@ class CTSD(lib.StreamObject):
         if eri is None:
             eri = self.ao2mo()
         self.eri = eri
+        self.h_core = h_core
+        self.fock = fock
         ##################################################
         # don't modify the following attributes, they are not input options
         self.mo_coeff = mo_coeff
@@ -251,8 +253,9 @@ class CTSD(lib.StreamObject):
 
 
         # need 1-RDM and 2-RDM in mo representation.
-        if dm1 is None or dm2 is None:
+        if dm1 is None:
             dm1 = np.diag(self.mf.mo_occ)
+        if dm2 is None:
             dm2 = (np.einsum('ij, kl -> ikjl', dm1, dm1) - np.einsum(
                 'il, kj -> ikjl', dm1, dm1) / 2)
         self.dm1 = dm1
@@ -261,7 +264,7 @@ class CTSD(lib.StreamObject):
         keys = set(('amps_algo'))
         self._keys = set(self.__dict__.keys()).union(keys)
 
-    def kernel(self, **kwargs):
+    def kernel(self, iterative=False, cutoff=1e-8, **kwargs):
         """
         Main function which calls other functions to calculate all the parts of
         the CT Hamiltonian and assemble them.
@@ -301,38 +304,68 @@ class CTSD(lib.StreamObject):
             t2 = None
         self.t1, self.t2 = self.init_amps(t1, t2)
 
-         
-
-
 
         # we need the one-body part of the original Hamiltonian h_mn
-        h_mn = self.mf.get_hcore()
-        h_mn = self.ao2mo(h_mn)
+        if self.h_core is None:
+            h_mn = self.mf.get_hcore()
+            h_mn = self.ao2mo(h_mn)
+        else:
+            h_mn = self.h_core
+        
+        if iterative:
+            h_norm = np.inf
+            # iterative construction of H bar, \bar{H} = H + \sum_n 1/n! [[[...]]]
+            ct_0 = 0.
+            ct_o1 = h_mn.copy()
+            ct_o2 = self.eri.copy()
+            h_bar = (ct_0, ct_o1, ct_o2)
+            n = 1
+            while h_norm > cutoff:
+                ct_0_tmp, ct_o1_tmp, ct_o2_tmp = self.commute(*h_bar)
+                fact_n_inv = 1/np.math.factorial(n) 
+                ct_0_tmp = ct_0_tmp * fact_n_inv
+                ct_o1_tmp = ct_o1_tmp * fact_n_inv
+                ct_o2_tmp = ct_o2_tmp * fact_n_inv
+                h_norm = np.linalg.norm(ct_o1_tmp) + np.linalg.norm(ct_o2_tmp) + ct_0_tmp
+                ct_0 += ct_0_tmp * fact_n_inv
+                ct_o1 += ct_o1_tmp * fact_n_inv
+                ct_o2 += ct_o2_tmp * fact_n_inv
+                h_bar = (ct_0, ct_o1, ct_o2)
+                print("n = ", n)
+                print("norm = ", h_norm)
 
-        ct_0, ct_o1, ct_o2 = self.commute(o1=h_mn, o2=self.eri)
+                n += 1
+            self.ct_0 = ct_0
+            self.ct_o1 = ct_o1
+            self.ct_o2 = ct_o2
+        else:
+            # Hyleraas approximation to H bar
+            ct_0, ct_o1, ct_o2 = self.commute(o1=h_mn, o2=self.eri)
 
-        ct_o1 += h_mn
-        ct_o2 += self.eri
+            ct_o1 += h_mn
+            ct_o2 += self.eri
 
-        # The second commutator 1/2*[[F, T], T]
-        # First construct F, the Fock matrix, as an approximation to H
-        # Notice fock has to be in mo basis
+            # The second commutator 1/2*[[F, T], T]
+            # First construct F, the Fock matrix, as an approximation to H
+            # Notice fock has to be in mo basis
 
-        fock_mn = self.mf.get_fock()
-        fock_mn = self.ao2mo(fock_mn)
+            if self.fock is None:
+                fock_mn = self.mf.get_fock()
+                fock_mn = self.ao2mo(fock_mn)
+            else:
+                fock_mn = self.fock
 
-        # The following [o1, t] gives rise to 1- and 2-body terms
-        c0_f, c1_f, c2_f = self.commute(*self.commute(o1=fock_mn))
+            # The following [o1, t] gives rise to 1- and 2-body terms
+            c0_f, c1_f, c2_f = self.commute(*self.commute(o1=fock_mn))
 
 
-        # final step might need to do some transformation on the eris so that
-        # other solvers can use it directly as usual integrals.
-        self.ct_0 = ct_0 + c0_f/2.
-        self.ct_o1 = ct_o1 + c1_f/2.
-        self.ct_o2 = ct_o2 + c2_f/2.
-        #self.ct_0 = ct_0
-        #self.ct_o1 = ct_o1
-        #self.ct_o2 = ct_o2
+            # final step might need to do some transformation on the eris so that
+            # other solvers can use it directly as usual integrals.
+            self.ct_0 = ct_0 + c0_f/2.
+            self.ct_o1 = ct_o1 + c1_f/2.
+            self.ct_o2 = ct_o2 + c2_f/2.
+
+
         return self.ct_0, self.ct_o1, self.ct_o2
 
 
@@ -347,7 +380,7 @@ class CTSD(lib.StreamObject):
 
         """
         # self.part_amps()
-        if t1 is None or t2 is None:
+        if (t1 is None or t2 is None) and (self.t1 is None or self.t2 is None):
             self.t1, self.t2 = self.get_amps()
             print("Using "+self._amps_algo+" amps...")
             # assign t1 and t2 partitions to _t1s and _t2s big arrays.
@@ -356,10 +389,14 @@ class CTSD(lib.StreamObject):
             # error prone and takes additional memory. (But it is convenient to implement
             # things this way.)
             self.collect_amps()
-        else:
+        elif t1 is not None and t2 is not None:
             print("Using user provided amplitudes...")
             self._t1s, self._t2s = t1, t2
             self.t1, self.t2 = self.part_amps()
+        elif self.t1 is not None and self.t2 is not None:
+            print("Amplitudes already initialised by user.")
+            self.collect_amps()
+        
         return self.t1, self.t2
 
     def get_amps(self):
@@ -368,6 +405,8 @@ class CTSD(lib.StreamObject):
             return self.get_mp2_amps()
         elif self._amps_algo == "reg_mp2":
             return self.get_reg_mp2_amps()
+        elif self._amps_algo == "shift_mp2":
+            return self.get_shifted_mp2_amps()
         elif self._amps_algo == "zero":
             return self.get_zero_amps()
         else:
@@ -386,7 +425,7 @@ class CTSD(lib.StreamObject):
                                     self.c_nmo])
         return self.t1, self.t2
 
-    def get_mp2_amps(self):
+    def get_mp2_amps(self, with_active=False):
 
         fock_mn = self.mf.get_fock()
         fock_mn = self.ao2mo(fock_mn)
@@ -396,38 +435,90 @@ class CTSD(lib.StreamObject):
         mo_e_a = self.mf.mo_energy[self.c_nmo:self.t_nmo]
         mo_e_x = self.mf.mo_energy[self.t_nmo:]
 
+        # occ to external
         e_xi = -(mo_e_x[:, None] - mo_e_i[None, :])
-        e_xa = -(mo_e_x[:, None] - mo_e_a[None, :])
+
+        self.t1["xi"] = fock_mn[self.t_nmo:, :self.c_nmo].copy()
+        self.t2["xyij"] = self.eri[self.t_nmo:, self.t_nmo:, :self.c_nmo,
+                               :self.c_nmo].copy()
+
+        self.t1["xi"] /= e_xi
+
+        self.t2["xyij"] /= lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
+
+        if with_active:
+            e_xa = -(mo_e_x[:, None] - mo_e_a[None, :])
+            self.t1["xa"] = fock_mn[self.t_nmo:, self.c_nmo:self.t_nmo].copy()
+
+            self.t2["xyab"] = self.eri[self.t_nmo:, self.t_nmo:,
+                            self.c_nmo:self.t_nmo:, self.c_nmo:self.t_nmo].copy()
+            self.t2["xyai"] = self.eri[self.t_nmo:, self.t_nmo:,
+                              self.c_nmo:self.t_nmo, :self.c_nmo].copy()
+            self.t1["xa"] /= e_xa
+            self.t2["xyab"] /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
+            self.t2["xyai"] /= lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
+
+        return self.t1, self.t2
+
+    def get_shifted_mp2_amps(self, epsilon=None):
+        print("Using shifted mp2 amps.")
+        print("epsilon = ", epsilon)
+
+        if self.fock is None:
+            fock_mn = self.mf.get_fock()
+            fock_mn = self.ao2mo(fock_mn)
+        else:
+            fock_mn = self.fock
+        mo_energy = fock_mn.diagonal()
+        if epsilon is None:
+            epsilon = mo_energy[self.nocc]+0.1
+
+        mo_e_i = mo_energy[:self.c_nmo]
+        # if regularization is needed, one can do it here.
+        mo_e_a = mo_energy[self.c_nmo:self.t_nmo]
+        mo_e_x = mo_energy[self.t_nmo:]
+
+        e_xi = -(mo_e_x[:, None] - mo_e_i[None, :])
+        #e_xa = -(mo_e_x[:, None] - epsilon)
+        shift = -epsilon * np.ones(self.a_nmo)
+        e_xa = -(mo_e_x[:, None] - shift[None, :])
 
         self.t1["xi"] = fock_mn[self.t_nmo:, :self.c_nmo].copy()
         self.t1["xa"] = fock_mn[self.t_nmo:, self.c_nmo:self.t_nmo].copy()
 
-        self.t2["xyab"] = self.eri[self.t_nmo:, self.t_nmo:,
-                        self.c_nmo:self.t_nmo:, self.c_nmo:self.t_nmo].copy()
         self.t2["xyij"] = self.eri[self.t_nmo:, self.t_nmo:, :self.c_nmo,
                                :self.c_nmo].copy()
+        self.t2["xyab"] = self.eri[self.t_nmo:, self.t_nmo:,
+                        self.c_nmo:self.t_nmo:, self.c_nmo:self.t_nmo].copy()
         self.t2["xyai"] = self.eri[self.t_nmo:, self.t_nmo:,
                           self.c_nmo:self.t_nmo, :self.c_nmo].copy()
 
+
         self.t1["xi"] /= e_xi
         self.t1["xa"] /= e_xa
+        delta_xyab = lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
+        delta_xyij = lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
+        delta_xyai = lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
 
-        self.t2["xyab"] /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
-        self.t2["xyij"] /= lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
-        self.t2["xyai"] /= lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
-
+        self.t2["xyab"] *= 1. / delta_xyab
+        self.t2["xyij"] *= 1. / delta_xyij
+        self.t2["xyai"] *= 1. / delta_xyai
 
         return self.t1, self.t2
 
     def get_reg_mp2_amps(self):
 
-        fock_mn = self.mf.get_fock()
-        fock_mn = self.ao2mo(fock_mn)
+        if self.fock is None:
+            fock_mn = self.mf.get_fock()
+            fock_mn = self.ao2mo(fock_mn)
+        else:
+            fock_mn = self.fock
+        mo_energy = fock_mn.diagonal()
 
-        mo_e_i = self.mf.mo_energy[:self.c_nmo]
+        mo_e_i = mo_energy[:self.c_nmo]
         # if regularization is needed, one can do it here.
-        mo_e_a = self.mf.mo_energy[self.c_nmo:self.t_nmo]
-        mo_e_x = self.mf.mo_energy[self.t_nmo:]
+        mo_e_a = mo_energy[self.c_nmo:self.t_nmo]
+        mo_e_x = mo_energy[self.t_nmo:]
 
         e_xi = -(mo_e_x[:, None] - mo_e_i[None, :])
         e_xa = -(mo_e_x[:, None] - mo_e_a[None, :])
@@ -447,7 +538,7 @@ class CTSD(lib.StreamObject):
         delta_xyab = lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
         delta_xyij = lib.direct_sum("xi+yj -> xyij", e_xi, e_xi)
         delta_xyai = lib.direct_sum("xa+yi -> xyai", e_xa, e_xi)
-        sigma = 0.05
+        sigma = 0.1
 
         self.t2["xyab"] *= 1. / delta_xyab * (1. - np.exp(-sigma * delta_xyab**2)) 
         self.t2["xyij"] *= 1. / delta_xyij * (1. - np.exp(-sigma * delta_xyij**2)) 
