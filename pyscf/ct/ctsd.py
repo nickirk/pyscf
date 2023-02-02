@@ -245,6 +245,7 @@ class CTSD(lib.StreamObject):
         self._t2s = np.zeros([self.e_nmo, self.e_nmo, self.t_nmo, self.t_nmo])
         self._t1s = np.zeros([self.e_nmo, self.t_nmo])
         self.t1, self.t2 = self.part_amps()
+        self.is_amp_init = False
         self._nocc = None
         self._nmo = None
         self._amps_algo = None
@@ -380,7 +381,7 @@ class CTSD(lib.StreamObject):
 
         """
         # self.part_amps()
-        if (t1 is None or t2 is None) and (self.t1 is None or self.t2 is None):
+        if (t1 is None or t2 is None) and not self.is_amp_init:
             self.t1, self.t2 = self.get_amps()
             print("Using "+self._amps_algo+" amps...")
             # assign t1 and t2 partitions to _t1s and _t2s big arrays.
@@ -389,13 +390,16 @@ class CTSD(lib.StreamObject):
             # error prone and takes additional memory. (But it is convenient to implement
             # things this way.)
             self.collect_amps()
+            self.is_amp_init = True
         elif t1 is not None and t2 is not None:
             print("Using user provided amplitudes...")
             self._t1s, self._t2s = t1, t2
             self.t1, self.t2 = self.part_amps()
-        elif self.t1 is not None and self.t2 is not None:
+            self.is_amp_init = True
+        elif self.is_amp_init:
             print("Amplitudes already initialised by user.")
             self.collect_amps()
+            self.is_amp_init = True
         
         return self.t1, self.t2
 
