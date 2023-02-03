@@ -265,7 +265,7 @@ class CTSD(lib.StreamObject):
         keys = set(('amps_algo'))
         self._keys = set(self.__dict__.keys()).union(keys)
 
-    def kernel(self, iterative=False, cutoff=1e-8, **kwargs):
+    def kernel(self, bch=False, cutoff=1e-8, solve=False, **kwargs):
         """
         Main function which calls other functions to calculate all the parts of
         the CT Hamiltonian and assemble them.
@@ -313,9 +313,9 @@ class CTSD(lib.StreamObject):
         else:
             h_mn = self.h_core
         
-        if iterative:
+        if bch:
             h_norm = np.inf
-            # iterative construction of H bar, \bar{H} = H + \sum_n 1/n! [[[...]]]
+            # bch construction of H bar, \bar{H} = H + \sum_n 1/n! [[[...]]]
             ct_0 = 0.
             ct_o1 = h_mn.copy()
             ct_o2 = self.eri.copy()
@@ -332,9 +332,6 @@ class CTSD(lib.StreamObject):
                 ct_o1 += ct_o1_tmp * fact_n_inv
                 ct_o2 += ct_o2_tmp * fact_n_inv
                 h_bar = (ct_0, ct_o1, ct_o2)
-                print("n = ", n)
-                print("norm = ", h_norm)
-
                 n += 1
             self.ct_0 = ct_0
             self.ct_o1 = ct_o1
@@ -365,10 +362,83 @@ class CTSD(lib.StreamObject):
             self.ct_0 = ct_0 + c0_f/2.
             self.ct_o1 = ct_o1 + c1_f/2.
             self.ct_o2 = ct_o2 + c2_f/2.
-
+        
+        if solve:
+            self.solve()
 
         return self.ct_0, self.ct_o1, self.ct_o2
+    
+    def solve(self):
+        '''
+         This function solves the generalized Brillouin condition self-consistently
+        '''
 
+        # sanity check if the H bar is constructed.
+        if self.ct_0 is None or self.ct_o1 is None or self.ct_o2 is None:
+            raise  ValueError("CT integrals not evaluated!")
+        
+        r1 = self.get_singles_residual()
+        r2 = self.get_doubles_residual()
+
+        # TODO: iterative 
+
+        return
+    
+    def get_singles_residual(self):
+        if self.h_core is None:
+            h_mn = self.mf.get_hcore()
+            h_mn = self.ao2mo(h_mn)
+        dm1 = self.dm1
+        dm2 = self.dm2
+        t_nmo = self.t_nmo
+        r1 = np.zeros(h1.shape())
+        r1 += np.einsum("nx, np -> xp", h_mn, dm1[:, :t_nmo])
+        r1 -= np.einsum("np, nx -> xp", h_mn, dm1[:, :t_nmo])
+        v_mnxu = self.eri[:, :, self.t_nmo:, :]
+        r1 += np.einsum("mnxu, mnpu -> xp", v_mnxu, dm2[:, :, :t_nmo, :])
+        v_mnpu = self.eri[:, :, self.t_nmo:, :]
+        r1 -= np.einsum("mnpu, mnxu -> xp", v_mnpu, dm2[:, :, t_nmo:, :])
+        r1 *= 2.
+
+        return r1
+
+    def get_doubles_residual(self):
+        
+        t_nmo = self.t_nmo
+        nmo = self.nmo
+        if self.h_core is None:
+            h_mn = self.mf.get_hcore()
+            h_mn = self.ao2mo(h_mn)
+        dm2 = self.dm2
+        dm1 = self.dm1
+
+        r2 = np.zeros(self._t2s.shape())
+        r2_bar = np.zeros(self._t2s.shape())
+        r2_bar += np.einsum("nx, nypq -> xypq", h_mn, dm2[:, t_nmo:, :t_nmo, :t_nmo])
+        r2_bar -= np.einsum("np, nqxy -> xypq", h_mn, dm2[:, t_nmo:, :t_nmo, :t_nmo])
+        r2 = r2.copy()
+        r2 += r2_bar.transpose((1, 0, 3, 2))
+
+        v_mnxy = self.eri[:, :, t_nmo:, t_nmo:]
+        v_mnpq = self.eri[:, :, :t_nmo, :t_nmo]
+
+        r2 += np.einsum("mnxy, mnpq -> xypq", v_mnxy, dm2[:, :, :t_nmo, :t_nmo])
+        r2 -= np.einsum("mnpq, mnxy -> xypq", v_mnpq, dm2[:, :, :t_nmo, :t_nmo])
+
+
+        slices = [0, nmo, 0, nmo, t_nmo, nmo,
+                  0, t_nmo, 0, nmo, 0, t_nmo]
+        d3 = get_d3_slice(dm1, dm2, slices)
+        v_mnxu = self.eri[:, :, t_nmo:, :]
+        r2 += 2. * np.einsum("mnxu, mnypuq -> xypq", v_mnxu, d3)
+
+        slices = [0, nmo, 0, nmo, 0, t_nmo,
+                  t_nmo, nmo,  0, nmo, t_nmo, nmo]
+        d3 = get_d3_slice(dm1, dm2, slices)
+        v_mnpu = self.eri[:, :, t_nmo:, :]
+        r2 -= 2. * np.einsum("mnpu, mnpxuy -> xypq", v_mnpu, d3)
+
+        return r2
 
     def init_amps(self, t1=None, t2=None):
         """
