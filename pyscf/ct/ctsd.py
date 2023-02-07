@@ -24,12 +24,14 @@ This module consists of:
 can be solved by any quantum chemistry methods;
 """
 import numpy as np
+from scipy.optimize import newton_krylov
 
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf import ao2mo, gto, scf
 from functools import reduce
 from pyscf.cc.ccsd import _ChemistsERIs
+
 
 def tensor_analysis(t):
     if len(t.shape) == 2:
@@ -233,6 +235,7 @@ class CTSD(lib.StreamObject):
         self.eri = eri
         self.h_core = h_core
         self.fock = fock
+        self.max_iter = 50
         ##################################################
         # don't modify the following attributes, they are not input options
         self.mo_coeff = mo_coeff
@@ -265,7 +268,7 @@ class CTSD(lib.StreamObject):
         keys = set(('amps_algo'))
         self._keys = set(self.__dict__.keys()).union(keys)
 
-    def kernel(self, bch=False, cutoff=1e-8, solve=False, **kwargs):
+    def kernel(self, bch=False, cutoff=1e-8, n_max=10, **kwargs):
         """
         Main function which calls other functions to calculate all the parts of
         the CT Hamiltonian and assemble them.
@@ -314,6 +317,7 @@ class CTSD(lib.StreamObject):
             h_mn = self.h_core
         
         if bch:
+            print("Using bch to infinite order to construct CT Hamiltonian")
             h_norm = np.inf
             # bch construction of H bar, \bar{H} = H + \sum_n 1/n! [[[...]]]
             ct_0 = 0.
@@ -321,7 +325,8 @@ class CTSD(lib.StreamObject):
             ct_o2 = self.eri.copy()
             h_bar = (ct_0, ct_o1, ct_o2)
             n = 1
-            while h_norm > cutoff:
+            while h_norm > cutoff and n < n_max:
+                print("n = ", n)
                 ct_0_tmp, ct_o1_tmp, ct_o2_tmp = self.commute(*h_bar)
                 fact_n_inv = 1/np.math.factorial(n) 
                 ct_0_tmp = ct_0_tmp * fact_n_inv
@@ -362,9 +367,6 @@ class CTSD(lib.StreamObject):
             self.ct_0 = ct_0 + c0_f/2.
             self.ct_o1 = ct_o1 + c1_f/2.
             self.ct_o2 = ct_o2 + c2_f/2.
-        
-        if solve:
-            self.solve()
 
         return self.ct_0, self.ct_o1, self.ct_o2
     
@@ -374,29 +376,61 @@ class CTSD(lib.StreamObject):
         '''
 
         # sanity check if the H bar is constructed.
-        if self.ct_0 is None or self.ct_o1 is None or self.ct_o2 is None:
-            raise  ValueError("CT integrals not evaluated!")
+        #if self.ct_0 is None or self.ct_o1 is None or self.ct_o2 is None:
+        #    raise  ValueError("CT integrals not evaluated!")
         
-        r1 = self.get_singles_residual()
-        r2 = self.get_doubles_residual()
-
         # TODO: iterative 
+        self.get_mp2_amps()
+        self.collect_amps()
+        t_init = np.zeros(self.e_nmo*self.t_nmo + self.e_nmo**2 * self.t_nmo**2)
+        self.is_amp_init = True
+        ts = newton_krylov(self.get_residual, t_init)
+        self._t1s, self._t2s = self.vec_to_amps(ts)
 
         return
     
+    def get_residual(self, t_ravel):
+        self._t1s, self._t2s = self.vec_to_amps(t_ravel)
+        self.kernel(bch=True, n_max=10)
+        r1 = self.get_singles_residual()
+        r2 = self.get_doubles_residual()
+        r = self.amps_to_vec(r1, r2)
+
+        print("CT Ref E = ", self.get_hf_energy())
+        print("residual norm = ", np.linalg.norm(r))
+
+        return r
+    
+    def amps_to_vec(self, t1, t2):
+        t_nmo = self.t_nmo
+        e_nmo = self.e_nmo
+        t1_size = t_nmo * e_nmo
+        size = self.t_nmo * self.e_nmo  + (self.t_nmo * self.e_nmo)**2
+        vec = np.zeros(size)
+
+        vec[:t1_size] = t1.ravel().copy()
+        vec[t1_size:] = t2.ravel().copy()
+
+        return vec
+
+    def vec_to_amps(self, vec):
+        t1 = vec[:self.t_nmo*self.e_nmo].reshape([self.e_nmo, self.t_nmo]).copy()
+        t2 = vec[self.t_nmo*self.e_nmo:].reshape([self.e_nmo, self.e_nmo, self.t_nmo, self.t_nmo]).copy()
+        
+        return t1, t2
+
+    
     def get_singles_residual(self):
-        if self.h_core is None:
-            h_mn = self.mf.get_hcore()
-            h_mn = self.ao2mo(h_mn)
+
         dm1 = self.dm1
         dm2 = self.dm2
         t_nmo = self.t_nmo
-        r1 = np.zeros(h1.shape())
-        r1 += np.einsum("nx, np -> xp", h_mn, dm1[:, :t_nmo])
-        r1 -= np.einsum("np, nx -> xp", h_mn, dm1[:, :t_nmo])
-        v_mnxu = self.eri[:, :, self.t_nmo:, :]
+        r1 = np.zeros(self._t1s.shape)
+        r1 += np.einsum("nx, np -> xp", self.ct_o1[:, t_nmo:], dm1[:, :t_nmo])
+        r1 -= np.einsum("np, nx -> xp", self.ct_o1[:, :t_nmo], dm1[:, t_nmo:])
+        v_mnxu = self.ct_o2[:, :, self.t_nmo:, :]
         r1 += np.einsum("mnxu, mnpu -> xp", v_mnxu, dm2[:, :, :t_nmo, :])
-        v_mnpu = self.eri[:, :, self.t_nmo:, :]
+        v_mnpu = self.ct_o2[:, :, :self.t_nmo, :]
         r1 -= np.einsum("mnpu, mnxu -> xp", v_mnpu, dm2[:, :, t_nmo:, :])
         r1 *= 2.
 
@@ -406,37 +440,36 @@ class CTSD(lib.StreamObject):
         
         t_nmo = self.t_nmo
         nmo = self.nmo
-        if self.h_core is None:
-            h_mn = self.mf.get_hcore()
-            h_mn = self.ao2mo(h_mn)
+        
         dm2 = self.dm2
         dm1 = self.dm1
 
-        r2 = np.zeros(self._t2s.shape())
-        r2_bar = np.zeros(self._t2s.shape())
-        r2_bar += np.einsum("nx, nypq -> xypq", h_mn, dm2[:, t_nmo:, :t_nmo, :t_nmo])
-        r2_bar -= np.einsum("np, nqxy -> xypq", h_mn, dm2[:, t_nmo:, :t_nmo, :t_nmo])
-        r2 = r2.copy()
+        r2 = np.zeros(self._t2s.shape)
+        r2_bar = np.zeros(self._t2s.shape)
+        r2_bar += np.einsum("nx, nypq -> xypq", self.ct_o1[:, t_nmo:], dm2[:, t_nmo:, :t_nmo, :t_nmo])
+        r2_bar -= np.einsum("np, nqxy -> xypq", self.ct_o1[:, :t_nmo], dm2[:, :t_nmo, t_nmo:, t_nmo:])
+        r2 = r2_bar.copy()
         r2 += r2_bar.transpose((1, 0, 3, 2))
 
-        v_mnxy = self.eri[:, :, t_nmo:, t_nmo:]
-        v_mnpq = self.eri[:, :, :t_nmo, :t_nmo]
+        v_mnxy = self.ct_o2[:, :, t_nmo:, t_nmo:]
+        v_mnpq = self.ct_o2[:, :, :t_nmo, :t_nmo]
 
-        r2 += np.einsum("mnxy, mnpq -> xypq", v_mnxy, dm2[:, :, :t_nmo, :t_nmo])
-        r2 -= np.einsum("mnpq, mnxy -> xypq", v_mnpq, dm2[:, :, :t_nmo, :t_nmo])
+        r2_bar = np.einsum("mnxy, mnpq -> xypq", v_mnxy, dm2[:, :, :t_nmo, :t_nmo])
+        r2_bar -= np.einsum("mnpq, mnxy -> xypq", v_mnpq, dm2[:, :, t_nmo:, t_nmo:])
 
 
         slices = [0, nmo, 0, nmo, t_nmo, nmo,
                   0, t_nmo, 0, nmo, 0, t_nmo]
         d3 = get_d3_slice(dm1, dm2, slices)
-        v_mnxu = self.eri[:, :, t_nmo:, :]
-        r2 += 2. * np.einsum("mnxu, mnypuq -> xypq", v_mnxu, d3)
+        v_mnxu = self.ct_o2[:, :, t_nmo:, :]
+        r2_bar += 2. * np.einsum("mnxu, mnypuq -> xypq", v_mnxu, d3)
 
         slices = [0, nmo, 0, nmo, 0, t_nmo,
                   t_nmo, nmo,  0, nmo, t_nmo, nmo]
         d3 = get_d3_slice(dm1, dm2, slices)
-        v_mnpu = self.eri[:, :, t_nmo:, :]
-        r2 -= 2. * np.einsum("mnpu, mnpxuy -> xypq", v_mnpu, d3)
+        v_mnpu = self.ct_o2[:, :, :t_nmo, :]
+        r2_bar -= 2. * np.einsum("mnpu, mnqxuy -> xypq", v_mnpu, d3)
+        r2 += r2_bar.transpose((1, 0, 3, 2)) * 0.5
 
         return r2
 
@@ -468,6 +501,7 @@ class CTSD(lib.StreamObject):
             self.is_amp_init = True
         elif self.is_amp_init:
             print("Amplitudes already initialised by user.")
+            self.part_amps()
             self.collect_amps()
             self.is_amp_init = True
         
@@ -1458,16 +1492,3 @@ class CTSD(lib.StreamObject):
         eris.vvvv = ao2mo.restore(1, eris.vvvv, nvir)
 
         return eris
-
-    def get_R1_prime(self):
-        pass
-
-    def get_R2_prime(self):
-        pass
-
-    def get_R1_dprime(self):
-        pass
-
-    def get_R2_dprime(self):
-        pass
-

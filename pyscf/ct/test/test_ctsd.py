@@ -31,11 +31,11 @@ def setUpModule():
     #    H    0.000000   -0.755453   -0.471161'''
     mol.atom = '''
         H    0.000000   0   0
-        H    0.000000   0   1.40
-        H    0.000000   0   2.8
-        H    0.000000   0   4.20'''
+        H    0.000000   0   0.741'''
+    #    H    0.000000   0   1.6
+    #    H    0.000000   0   2.4'''
     mol.unit = 'A'
-    mol.basis = 'sto6g'
+    mol.basis = 'ccpvdz'
     #mol.basis = 'ccpvdz'
     mol.build()
     mf = scf.RHF(mol)
@@ -627,6 +627,9 @@ class KnownValues(unittest.TestCase):
 
     def test_iterative_h_bar(self):
         myct.kernel(iterative=True)
+    
+    def test_solve(self):
+        myct.solve()
 
 
 if __name__ == "__main__":
