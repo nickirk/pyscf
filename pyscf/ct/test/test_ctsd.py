@@ -8,9 +8,9 @@ from pyscf import cc, fci
 from pyscf.cc import ccsd
 
 import os
-os.environ["MKL_NUM_THREADS"] = "1" 
-os.environ["NUMEXPR_NUM_THREADS"] = "1" 
-os.environ["OMP_NUM_THREADS"] = "1" 
+#os.environ["MKL_NUM_THREADS"] = "1" 
+#os.environ["NUMEXPR_NUM_THREADS"] = "1" 
+#os.environ["OMP_NUM_THREADS"] = "1" 
 
 def setUpModule():
     global mol, mf, myct
@@ -31,7 +31,7 @@ def setUpModule():
     #    H    0.000000   -0.755453   -0.471161'''
     mol.atom = '''
         H    0.000000   0   0
-        H    0.000000   0   0.741'''
+        H    0.000000   0   1.'''
     #    H    0.000000   0   1.6
     #    H    0.000000   0   2.4'''
     mol.unit = 'A'
@@ -42,8 +42,8 @@ def setUpModule():
     #mf.chkfile = tempfile.NamedTemporaryFile().name
     mf.conv_tol_grad = 1e-8
     mf.kernel()
-    cisolver = fci.FCI(mf)
-    print('E(FCI) = %.12f' % cisolver.kernel()[0])
+    #cisolver = fci.FCI(mf)
+    #print('E(FCI) = %.12f' % cisolver.kernel()[0])
     # active space is set to 0. The reference energy of the
     # CT Ham should reproduce MP2 energy
     myct = ctsd.CTSD(mf, a_nmo=0)
@@ -626,7 +626,7 @@ class KnownValues(unittest.TestCase):
         print("END")
 
     def test_iterative_h_bar(self):
-        myct.kernel(iterative=True)
+        myct.kernel(bch=True)
     
     def test_solve(self):
         myct.solve()
