@@ -35,20 +35,20 @@ from pyscf.cc.ccsd import _ChemistsERIs
 
 def tensor_analysis(t):
     if len(t.shape) == 2:
-        print("***** order 2 tensor")
-        print(" sum = ", np.sum(t))
-        print(" abs sum = ", np.sum(np.abs(t)))
-        print(" nonsymmetriness = ", np.sum(t - t.T))
-        print(" nondiagonalness = ", np.sum(np.abs(t)) - np.sum(np.abs(t.diagonal())))
+        logger.info(self, "***** order 2 tensor")
+        logger.info(self, " sum = ", np.sum(t))
+        logger.info(self, " abs sum = ", np.sum(np.abs(t)))
+        logger.info(self, " nonsymmetriness = ", np.sum(t - t.T))
+        logger.info(self, " nondiagonalness = ", np.sum(np.abs(t)) - np.sum(np.abs(t.diagonal())))
     elif len(t.shape) == 4:
-        print("***** order 4 tensor")
-        print(" sum = ", np.sum(t))
-        print(" abs sum = ", np.sum(np.abs(t)))
-        print(" nonsymmetriness 0123 - 1032= ", np.sum(np.abs(t - t.transpose((1, 0, 3, 2)).copy())))
-        print(" nonsymmetriness 0123 - 3210= ", np.sum(np.abs(t - t.transpose((3, 2, 1, 0)).copy())))
-        print(" nonsymmetriness 0123 - 2301= ", np.sum(np.abs(t - t.transpose((2, 3, 0, 1)).copy())))
-        print(" nonsymmetriness 0123 - 1023= ", np.sum(np.abs(t - t.transpose((1, 0, 2, 3)).copy())))
-        print(" nonsymmetriness 0123 - 0132= ", np.sum(np.abs(t - t.transpose((0, 1, 3, 2)).copy())))
+        logger.info(self, "***** order 4 tensor")
+        logger.info(self, " sum = ", np.sum(t))
+        logger.info(self, " abs sum = ", np.sum(np.abs(t)))
+        logger.info(self, " nonsymmetriness 0123 - 1032= ", np.sum(np.abs(t - t.transpose((1, 0, 3, 2)).copy())))
+        logger.info(self, " nonsymmetriness 0123 - 3210= ", np.sum(np.abs(t - t.transpose((3, 2, 1, 0)).copy())))
+        logger.info(self, " nonsymmetriness 0123 - 2301= ", np.sum(np.abs(t - t.transpose((2, 3, 0, 1)).copy())))
+        logger.info(self, " nonsymmetriness 0123 - 1023= ", np.sum(np.abs(t - t.transpose((1, 0, 2, 3)).copy())))
+        logger.info(self, " nonsymmetriness 0123 - 0132= ", np.sum(np.abs(t - t.transpose((0, 1, 3, 2)).copy())))
 
 def symmetrize(t):
     """This function symmetrizes tensor t of dim 2 or 4.
@@ -235,7 +235,14 @@ class CTSD(lib.StreamObject):
         self.eri = eri
         self.h_core = h_core
         self.fock = fock
-        self.max_iter = 50
+        # iterative solution 
+        self.max_cycle = 50
+        # max number of bch expansion
+        self.build_hbar_use_bch = True
+        self.n_bch = 50
+        self.conv_tol_e = 1e-7
+        self.conv_tol_normt = 1e-6
+        self.diis_space = 8
         ##################################################
         # don't modify the following attributes, they are not input options
         self.mo_coeff = mo_coeff
@@ -268,7 +275,26 @@ class CTSD(lib.StreamObject):
         keys = set(('amps_algo'))
         self._keys = set(self.__dict__.keys()).union(keys)
 
-    def kernel(self, bch=False, cutoff=1e-8, n_max=10, **kwargs):
+    def dump_flags(self, verbose=None):
+        log = logger.new_logger(self, verbose)
+        log.info('')
+        log.info('******** %s ********', self.__class__)
+        log.info('CTSD nocc = %s, a_nmo = %s, e_nmo = %s, t_nmo = %s', self.nocc, self.a_nmo, self.e_nmo, self.t_nmo)
+        log.info('max_cycle = %d', self.max_cycle)
+        log.info('build_hbar_use_bch = %s', self.build_hbar_use_bch)
+        if self.build_hbar_use_bch:
+            log.info('n_bch = %d', self.n_bch)
+        else:
+            log.info('amps_algo = %d', self.amps_algo)
+        log.info('conv_tol_e = %g', self.conv_tol_e)
+        log.info('conv_tol_normt = %s', self.conv_tol_normt)
+        log.info('diis_space = %d', self.diis_space)
+        #log.info('diis_file = %s', self.diis_file)
+        log.info('max_memory %d MB (current use %d MB)',
+                 self.max_memory, lib.current_memory()[0])
+        return self
+
+    def build_hbar(self, bch=False, cutoff=1e-8, n_max=10, **kwargs):
         """
         Main function which calls other functions to calculate all the parts of
         the CT Hamiltonian and assemble them.
@@ -294,7 +320,10 @@ class CTSD(lib.StreamObject):
 
         if self.eri is None:
             self.eri = self.ao2mo()
-
+        if bch is not None:
+            self.build_hbar_use_bch = bch
+        if not bch:
+            self.dump_flags()
         # initialize the amplitudes
         if "amps_algo" in kwargs:
             self.amps_algo = kwargs["amps_algo"]
@@ -316,33 +345,31 @@ class CTSD(lib.StreamObject):
         else:
             h_mn = self.h_core
         
-        if bch:
-            print("Using bch to infinite order to construct CT Hamiltonian")
+        if self.build_hbar_use_bch:
+            logger.info(self, "    using BCH expansion up to max %s terms", n_max)
             h_norm = np.inf
             # bch construction of H bar, \bar{H} = H + \sum_n 1/n! [[[...]]]
             ct_0 = 0.
             ct_o1 = h_mn.copy()
             ct_o2 = self.eri.copy()
-            h_bar = (ct_0, ct_o1, ct_o2)
+            commutator = (ct_0, ct_o1, ct_o2)
             n = 1
             while h_norm > cutoff and n < n_max:
-                print("n = ", n)
-                ct_0_tmp, ct_o1_tmp, ct_o2_tmp = self.commute(*h_bar)
+                ct_0_tmp, ct_o1_tmp, ct_o2_tmp = self.commute(*commutator)
                 fact_n_inv = 1/np.math.factorial(n) 
-                ct_0_tmp = ct_0_tmp * fact_n_inv
-                ct_o1_tmp = ct_o1_tmp * fact_n_inv
-                ct_o2_tmp = ct_o2_tmp * fact_n_inv
                 h_norm = np.linalg.norm(ct_o1_tmp) + np.linalg.norm(ct_o2_tmp) + ct_0_tmp
                 ct_0 += ct_0_tmp * fact_n_inv
                 ct_o1 += ct_o1_tmp * fact_n_inv
                 ct_o2 += ct_o2_tmp * fact_n_inv
-                h_bar = (ct_0, ct_o1, ct_o2)
+                commutator = (ct_0_tmp, ct_o1_tmp, ct_o2_tmp)
                 n += 1
+            logger.info(self, "    used in total %d terms in BCH expansion", n)
             self.ct_0 = ct_0
             self.ct_o1 = ct_o1
             self.ct_o2 = ct_o2
         else:
             # Hyleraas approximation to H bar
+            logger.info(self, "    using Hylleraas functional to approximate H_bar")
             ct_0, ct_o1, ct_o2 = self.commute(o1=h_mn, o2=self.eri)
 
             ct_o1 += h_mn
@@ -370,7 +397,7 @@ class CTSD(lib.StreamObject):
 
         return self.ct_0, self.ct_o1, self.ct_o2
     
-    def solve(self, method="diis", epsilon=1e-6, max_iter=100, step=0.1):
+    def solve(self, method="diis", max_cycle=100, step=0.1, n_bch=None):
         '''
          This function solves the generalized Brillouin condition self-consistently
         '''
@@ -384,32 +411,45 @@ class CTSD(lib.StreamObject):
         self.collect_amps()
         t_init = np.zeros(self.e_nmo*self.t_nmo + self.e_nmo**2 * self.t_nmo**2)
         self.is_amp_init = True
+        e_ct = 0.
+        if n_bch is not None:
+            self.n_bch = n_bch
+        if max_cycle is not None:
+            self.max_cycle = max_cycle
+
+        self.dump_flags()
+
         if method == "newton_krylov":
             ts = newton_krylov(self.get_residual, t_init)
             self._t1s, self._t2s = self.vec_to_amps(ts)
+            e_ct = self.get_hf_energy()
         elif method == "diis":
             de = np.inf
             e_old = 0.
             i = 0
             mydiis = diis.DIIS()
-            while np.abs(de) > epsilon and i < max_iter:
-                print("iter = ", i)
-                print("dE = ", de)
-                dt = self.get_residual(t_init)
-                dt1, dt2 = self.vec_to_amps(dt)
-                mo_e = self.mo_energy
-                e_xp = -(mo_e[self.t_nmo:, None] - mo_e[None, :self.t_nmo])
-                e_xypq = lib.einsum("xi, yj -> xyij", e_xp, e_xp)
-                dt1 /= e_xp
-                dt2 /= e_xypq
-                self._t1s -= dt1 * step
-                self._t2s -= dt2 * step
-                t_init = self.amps_to_vec(self._t1s, self._t2s)
-                t_init = mydiis.update(t_init)
-                e_ct = self.get_hf_energy()
-                de = e_ct - e_old
-                e_old = e_ct
-                i += 1
+            mydiis.space = self.diis_space 
+            dt_norm = np.inf
+            for i in range(self.max_cycle):
+                if np.abs(de) > self.conv_tol_e and dt_norm > self.conv_tol_normt:
+                    dt = self.get_residual(t_init)
+                    dt_norm = np.linalg.norm(dt)
+                    dt1, dt2 = self.vec_to_amps(dt)
+                    mo_e = self.mo_energy
+                    e_xp = -(mo_e[self.t_nmo:, None] - mo_e[None, :self.t_nmo])
+                    e_xypq = lib.einsum("xi, yj -> xyij", e_xp, e_xp)
+                    dt1 /= e_xp
+                    dt2 /= e_xypq
+                    self._t1s -= dt1 * step
+                    self._t2s -= dt2 * step
+                    t_init = self.amps_to_vec(self._t1s, self._t2s)
+                    t_init = mydiis.update(t_init)
+                    e_ct = self.get_hf_energy()
+                    de = e_ct - e_old
+                    e_old = e_ct
+                    e_corr = e_ct - self.mf.e_tot 
+                    logger.info(self, "cycle = %s, E_corr(CTSD) = %.15g, dE = %.7e, |dt| = %.7e", i, e_corr, de, dt_norm)
+                    logger.debug1(self, "    mo_energy = %s", mo_e)
         else:
             raise NotImplementedError
 
@@ -418,19 +458,13 @@ class CTSD(lib.StreamObject):
     
     def get_residual(self, t_ravel):
         self._t1s, self._t2s = self.vec_to_amps(t_ravel)
-        self.kernel(bch=True, n_max=2)
+        self.build_hbar(bch=True, n_max=self.n_bch)
         r1 = self.get_singles_residual()
         r2 = self.get_doubles_residual()
-        print("t1 norm =", np.linalg.norm(self._t1s))
-        print("t2 norm =", np.linalg.norm(self._t2s))
-        print("r1 norm =", np.linalg.norm(r1))
-        print("r2 norm =", np.linalg.norm(r2))
-        print("c1 norm =", np.linalg.norm(self.ct_o1))
-        print("c2 norm =", np.linalg.norm(self.ct_o2))
+        logger.debug1(self, "    |t1| = %.15g, |t2| = %.15g", np.linalg.norm(self._t1s), np.linalg.norm(self._t2s))
+        logger.debug1(self, "    |r1| = %.15g, |r2| = %.15g", np.linalg.norm(r1), np.linalg.norm(r2))
+        logger.debug1(self, "    |c1| = %.15g, |c2| = %.15g", np.linalg.norm(self.ct_o1), np.linalg.norm(self.ct_o2))
         r = self.amps_to_vec(r1, r2)
-
-        print("CT Ref E = ", self.get_hf_energy())
-        print("residual norm = ", np.linalg.norm(r))
 
         return r
     
@@ -520,7 +554,7 @@ class CTSD(lib.StreamObject):
         # self.part_amps()
         if (t1 is None or t2 is None) and not self.is_amp_init:
             self.t1, self.t2 = self.get_amps()
-            print("Using "+self._amps_algo+" amps...")
+            logger.info(self, "using "+self._amps_algo+" amps...")
             # assign t1 and t2 partitions to _t1s and _t2s big arrays.
             # whenever self.t1 and self.t2 are updated, _t1s and _t2s should also be
             # updated. FIXME: this is not the ideal way to do things, because it is
@@ -529,12 +563,12 @@ class CTSD(lib.StreamObject):
             self.collect_amps()
             self.is_amp_init = True
         elif t1 is not None and t2 is not None:
-            print("Using user provided amplitudes...")
+            logger.debug2(self, "    using user provided amplitudes...")
             self._t1s, self._t2s = t1, t2
             self.t1, self.t2 = self.part_amps()
             self.is_amp_init = True
         elif self.is_amp_init:
-            print("Amplitudes already initialised by user.")
+            logger.debug2(self, "    amplitudes already initialised by user.")
             self.part_amps()
             self.collect_amps()
             self.is_amp_init = True
@@ -603,8 +637,8 @@ class CTSD(lib.StreamObject):
         return self.t1, self.t2
 
     def get_shifted_mp2_amps(self, epsilon=None):
-        print("Using shifted mp2 amps.")
-        print("epsilon = ", epsilon)
+        logger.info(self, "using shifted mp2 amps.")
+        logger.info(self, "epsilon = ", epsilon)
 
         if self.fock is None:
             fock_mn = self.mf.get_fock()
@@ -1326,8 +1360,8 @@ class CTSD(lib.StreamObject):
         Returns:
             ct_mo_coeff: matrix [nmo, nmo]. Transformation matrix for integrals.
         """
-        print("ct mo_energy = ")
-        print(self.mo_energy)
+        logger.info(self, "ct mo_energy = ")
+        logger.info(self, self.mo_energy)
         mol = gto.M()
         mol.verbose = 7
         mol.nelectron = self.nocc * 2
@@ -1339,8 +1373,8 @@ class CTSD(lib.StreamObject):
         mf._eri = self.ct_o2.transpose((0, 2, 1, 3))
         dm0 = np.diag(self.mf.mo_occ)
         mf.kernel(dm0=dm0)
-        print("mo_energy = ")
-        print(mf.mo_energy)
+        logger.info(self, "mo_energy = ")
+        logger.info(self, mf.mo_energy)
         mol.incore_anyway = True
         self.ct_o1 = self.ao2mo(self.ct_o1, mf.mo_coeff)
         self.ct_o2 = self.ao2mo(self.ct_o2, mf.mo_coeff, to_phy=False)

@@ -15,7 +15,7 @@ import os
 def setUpModule():
     global mol, mf, myct
     mol = gto.Mole()
-    mol.verbose = 3
+    mol.verbose = 7
     #mol.output = '/dev/null'
     #mol.atom = '''
     #    N  0.  0 0;
@@ -25,25 +25,28 @@ def setUpModule():
     #    F  0.  0 0;
     #    F  0.  0 2.0;
     #    '''
-    #mol.atom = '''
-    #    O    0.000000    0.000000    0.117790
-    #    H    0.000000    0.755453   -0.471161
-    #    H    0.000000   -0.755453   -0.471161'''
     mol.atom = '''
-        He    0.000000   0   0
-        He    0.000000   0   1'''
-    #    H    0.000000   0   1.6
-    #    H    0.000000   0   2.4'''
+        O    0.000000    0.000000    0.117790
+        H    0.000000    0.755453   -0.471161
+        H    0.000000   -0.755453   -0.471161'''
+    #mol.atom = '''
+    #    H    0.000000   0   0
+    #    H    0.000000   0   1
+    #    H    0.000000   0   2
+    #    H    0.000000   0   3'''
     mol.unit = 'A'
-    mol.basis = 'ccpvdz'
     #mol.basis = 'ccpvdz'
+    mol.basis = 'sto6g'
     mol.build()
     mf = scf.RHF(mol)
     #mf.chkfile = tempfile.NamedTemporaryFile().name
     mf.conv_tol_grad = 1e-8
     mf.kernel()
-    #cisolver = fci.FCI(mf)
-    #print('E(FCI) = %.12f' % cisolver.kernel()[0])
+    cisolver = fci.FCI(mf)
+    print('E(FCI) = %.12f' % cisolver.kernel()[0])
+    mycc = cc.CCSD(mf)
+    mycc.kernel()
+    print('E(CCSD) = %.12f' % mycc.e_tot)
     # active space is set to 0. The reference energy of the
     # CT Ham should reproduce MP2 energy
     myct = ctsd.CTSD(mf, a_nmo=0)
@@ -169,7 +172,7 @@ class KnownValues(unittest.TestCase):
         # for dm obtained from HF wavefunction, slices of d3 containing
         # indices other than the occupied (core) will be 0.
         # so c0 = 0
-        myct.kernel()
+        myct.build_hbar()
         print("Using amps_algo = ", myct.amps_algo)
         ct_0 = myct.get_c0()
         assert ct_0 == 0.
@@ -182,7 +185,7 @@ class KnownValues(unittest.TestCase):
         hcore = myct.ao2mo(myct.mf.get_hcore())
 
         myct.amps_algo = "zero"
-        c0, h1, v2 = myct.kernel()
+        c0, h1, v2 = myct.build_hbar()
         assert np.allclose(hcore, h1)
         # get original eri from mf and mo_coeff
         eri = ao2mo.full(mf._eri, mf.mo_coeff)
@@ -197,7 +200,7 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(e_hf_ct, e_hf, 8)
 
     def test_get_mo_energy(self):
-        c0, c1, c2 = myct.kernel()
+        c0, c1, c2 = myct.build_bch()
         ct_hf_e = myct.get_hf_energy(c0, c1, c2)
         print("CT HF energy = ", ct_hf_e)
 
@@ -224,7 +227,7 @@ class KnownValues(unittest.TestCase):
         print("*"*79)
         print("eri tensor")
         ctsd.tensor_analysis(myct.eri)
-        c0, c1, c2 = myct.kernel()
+        c0, c1, c2 = myct.build_bch()
         ct_hf_e = myct.get_hf_energy(c0, c1, c2)
         print("CT HF energy = ", ct_hf_e)
         c1 = myct.get_c1() 
@@ -339,7 +342,7 @@ class KnownValues(unittest.TestCase):
 
 
     def test_canonicalize(self):
-        myct.kernel()
+        myct.build_bch()
         ctsd.tensor_analysis(myct.ct_o2)
         ct_mo_energy = myct.get_mo_energy()
         hl_gap = ct_mo_energy[myct.c_nmo+1]-ct_mo_energy[myct.c_nmo] 
@@ -360,7 +363,7 @@ class KnownValues(unittest.TestCase):
         
 
         myct.amps_algo = "zero"
-        c0, h1, v2 = myct.kernel()
+        c0, h1, v2 = myct.build_hbar()
         assert np.allclose(hcore, h1)
         # get original eri from mf and mo_coeff
         eri = ao2mo.full(mf._eri, mf.mo_coeff)
@@ -373,7 +376,7 @@ class KnownValues(unittest.TestCase):
 
         # testing oooo block 
         myct.amps_algo = "mp2"
-        c0, h1, v2 = myct.kernel()
+        c0, h1, v2 = myct.build_hbar()
         eris = myct.create_eris()
         ct_hf_e = 2. * np.einsum("ii -> ", h1[:myct.nocc, :myct.nocc])
         ct_hf_e += 2. * np.einsum("iijj -> ", eris.oooo)
@@ -387,7 +390,7 @@ class KnownValues(unittest.TestCase):
         mymp = mp.MP2(mf).run()
         mp2_total = mymp.e_tot
         myct.amps_algo = "mp2"
-        c0, c1, c2 = myct.kernel()
+        c0, c1, c2 = myct.build_hbar()
         ct_hf_e = myct.get_hf_energy(c0, c1, c2)
         print("CT HF energy = ", ct_hf_e)
 
@@ -408,7 +411,7 @@ class KnownValues(unittest.TestCase):
 
     def test_ct_mp2(self):
         myct.amps_algo = "mp2"
-        c0, c1, c2 = myct.kernel()
+        c0, c1, c2 = myct.build_hbar()
         ct_hf_e = myct.get_hf_energy(c0, c1, c2)
         eris = myct.create_eris()
         mymp = mp.MP2(mf)
@@ -456,7 +459,7 @@ class KnownValues(unittest.TestCase):
     def test_ct_mp2_sr_mr(self):
         myct.amps_algo = "mp2"
         #myct.mf.mo_energy[myct.c_nmo:] += 1
-        myct.kernel()
+        myct.build_hbar()
         # construct c0, c1, c2 from mr implementation
         h_mn = myct.mf.get_hcore()
         h_mn = myct.ao2mo(h_mn)
@@ -596,10 +599,10 @@ class KnownValues(unittest.TestCase):
         mycc = cc.CCSD(mf)
         #mycc.max_cycle = 1
         mycc.kernel()
-        #c0, c1, c2 = myct.kernel(t1=np.zeros([myct.nmo-myct.c_nmo, myct.c_nmo]), t2=mycc.t2.transpose((2,3,0,1)))
-        #c0, c1, c2 = myct.kernel(t1=mycc.t1.T, t2=mycc.t2.transpose((2,3,0,1)))
+        #c0, c1, c2 = myct.build_hbar(t1=np.zeros([myct.nmo-myct.c_nmo, myct.c_nmo]), t2=mycc.t2.transpose((2,3,0,1)))
+        #c0, c1, c2 = myct.build_hbar(t1=mycc.t1.T, t2=mycc.t2.transpose((2,3,0,1)))
         #myct.canonicalize()
-        myct.kernel()
+        myct.build_hbar()
         ct_hf_e = myct.get_hf_energy()
         print("CT HF energy = ", ct_hf_e)
         
@@ -626,14 +629,32 @@ class KnownValues(unittest.TestCase):
         print("END")
 
     def test_iterative_h_bar(self):
-        myct.kernel(bch=True)
+        myct.build_hbar(bch=True)
     
-    def test_solve(self):
-        e_ct = myct.solve(method='diis', epsilon=1e-8, max_iter=300)
+    def test_bench_lin_uccsd(self):
+        mol.atom = '''
+            He    0.000000    0.0 0.0
+            He   0.000000   0.0 1.0'''
+        mol.unit = 'A'
+        mol.basis = 'ccpvdz'
+        mol.verbose = 4
+        mol.build()
+        mf = scf.RHF(mol)
+        #mf.chkfile = tempfile.NamedTemporaryFile().name
+        mf.conv_tol_grad = 1e-8
+        mf.kernel()
+        cisolver = fci.FCI(mf)
+        myct = ctsd.CTSD(mf, a_nmo=0)
+        e_ct = myct.solve(method='diis', max_cycle=300, n_bch=2)
         e_hf = mf.e_tot
         e_corr = e_ct - e_hf
         assert np.isclose(-0.13652442, e_corr)
 
+    def test_solve(self):
+        e_ct = myct.solve(method='diis', max_cycle=1000, step=0.5)
+        e_hf = mf.e_tot
+        e_corr = e_ct - e_hf
+        #assert np.isclose(-0.13652442, e_corr)
 
 if __name__ == "__main__":
     print("Full Tests for CT")
