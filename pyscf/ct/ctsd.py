@@ -27,7 +27,7 @@ import numpy as np
 from scipy.optimize import newton_krylov
 
 from pyscf import lib
-from pyscf.lib import logger
+from pyscf.lib import logger, diis
 from pyscf import ao2mo, gto, scf
 from functools import reduce
 from pyscf.cc.ccsd import _ChemistsERIs
@@ -370,7 +370,7 @@ class CTSD(lib.StreamObject):
 
         return self.ct_0, self.ct_o1, self.ct_o2
     
-    def solve(self):
+    def solve(self, method="diis", epsilon=1e-6, max_iter=100, step=0.1):
         '''
          This function solves the generalized Brillouin condition self-consistently
         '''
@@ -384,10 +384,37 @@ class CTSD(lib.StreamObject):
         self.collect_amps()
         t_init = np.zeros(self.e_nmo*self.t_nmo + self.e_nmo**2 * self.t_nmo**2)
         self.is_amp_init = True
-        ts = newton_krylov(self.get_residual, t_init)
-        self._t1s, self._t2s = self.vec_to_amps(ts)
+        if method == "newton_krylov":
+            ts = newton_krylov(self.get_residual, t_init)
+            self._t1s, self._t2s = self.vec_to_amps(ts)
+        elif method == "diis":
+            de = np.inf
+            e_old = 0.
+            i = 0
+            mydiis = diis.DIIS()
+            while np.abs(de) > epsilon and i < max_iter:
+                print("iter = ", i)
+                print("dE = ", de)
+                dt = self.get_residual(t_init)
+                dt1, dt2 = self.vec_to_amps(dt)
+                mo_e = self.mo_energy
+                e_xp = -(mo_e[self.t_nmo:, None] - mo_e[None, :self.t_nmo])
+                e_xypq = lib.einsum("xi, yj -> xyij", e_xp, e_xp)
+                dt1 /= e_xp
+                dt2 /= e_xypq
+                self._t1s -= dt1 * step
+                self._t2s -= dt2 * step
+                t_init = self.amps_to_vec(self._t1s, self._t2s)
+                t_init = mydiis.update(t_init)
+                e_ct = self.get_hf_energy()
+                de = e_ct - e_old
+                e_old = e_ct
+                i += 1
+        else:
+            raise NotImplementedError
 
-        return
+
+        return e_ct
     
     def get_residual(self, t_ravel):
         self._t1s, self._t2s = self.vec_to_amps(t_ravel)

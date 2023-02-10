@@ -30,8 +30,8 @@ def setUpModule():
     #    H    0.000000    0.755453   -0.471161
     #    H    0.000000   -0.755453   -0.471161'''
     mol.atom = '''
-        H    0.000000   0   0
-        H    0.000000   0   1.'''
+        He    0.000000   0   0
+        He    0.000000   0   1'''
     #    H    0.000000   0   1.6
     #    H    0.000000   0   2.4'''
     mol.unit = 'A'
@@ -629,7 +629,10 @@ class KnownValues(unittest.TestCase):
         myct.kernel(bch=True)
     
     def test_solve(self):
-        myct.solve()
+        e_ct = myct.solve(method='diis', epsilon=1e-8, max_iter=300)
+        e_hf = mf.e_tot
+        e_corr = e_ct - e_hf
+        assert np.isclose(-0.13652442, e_corr)
 
 
 if __name__ == "__main__":
