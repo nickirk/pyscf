@@ -135,6 +135,77 @@ def get_d3_slice(dm1=None, dm2=None, slices=None):
                        (1, 2, 0, 4, 5, 3))
     return d3
 
+def find_inds_bound(ind, t_nmo, nmo):
+    ind_bounds = []
+    for p in ind:
+        if p in "xy":
+            ind_bounds.append([t_nmo, nmo])
+        elif p in "mnuv":
+            ind_bounds.append([0, nmo])
+        elif p in "pqrs":
+            ind_bounds.append([0, t_nmo])
+        else:
+            raise ValueError("Index %s not recongnized", p)
+    return ind_bounds
+
+def part_dms(dm1_inds, dm2_inds, dm1, dm2, t_nmo, nmo):
+    bd = find_inds_bound(dm1_inds, t_nmo, nmo)
+    dm1_part = dm1[bd[0][0]:bd[0][1], bd[1][0]:bd[1][1]].copy()
+    bd = find_inds_bound(dm2_inds, t_nmo, nmo)
+    dm2_part = dm2[bd[0][0]:bd[0][1], bd[1][0]:bd[1][1], bd[2][0]:bd[2][1], bd[3][0]:bd[3][1]].copy()
+
+    return dm1_part, dm2_part
+
+def contr_dm3(o2_inds, o3_inds, v, dm1, dm2, t_nmo, nmo):
+    p1, p2, p3, p4, p5, p6 = o3_inds[:]
+
+    dm1_inds = p1+p4
+    dm2_inds = p2+p3+p5+p6
+    dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, t_nmo, nmo)
+    r = lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> xypq", v, dm1_part, dm2_part)
+
+    dm1_inds = p1+p5
+    dm2_inds = p2+p3+p4+p6
+    dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, t_nmo, nmo)
+    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> xypq", v, dm1_part, dm2_part)
+
+    dm1_inds = p1+p6
+    dm2_inds = p2+p3+p5+p4
+    dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, t_nmo, nmo)
+    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> xypq", v, dm1_part, dm2_part)
+
+    dm1_inds = p2+p5
+    dm2_inds = p3+p1+p6+p4
+    dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, t_nmo, nmo)
+    r += lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+"-> xypq", v, dm1_part, dm2_part)
+
+    dm1_inds = p2+p6
+    dm2_inds = p3+p1+p5+p4
+    dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, t_nmo, nmo)
+    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> xypq", v, dm1_part, dm2_part)
+
+    dm1_inds = p2+p4
+    dm2_inds = p3+p1+p6+p5
+    dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, t_nmo, nmo)
+    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+"-> xypq", v, dm1_part, dm2_part)
+
+    dm1_inds = p3+p6
+    dm2_inds = p1+p2+p4+p5
+    dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, t_nmo, nmo)
+    r += lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> xypq", v, dm1_part, dm2_part)
+
+    dm1_inds = p3+p4
+    dm2_inds = p1+p2+p6+p5
+    dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, t_nmo, nmo)
+    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> xypq", v, dm1_part, dm2_part)
+
+    dm1_inds = p3+p5
+    dm2_inds = p1+p2+p4+p6
+    dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, t_nmo, nmo)
+    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> xypq", v, dm1_part, dm2_part)
+
+    return r
+
 
 def get_d_zero(dm1=None, dm2=None):
     """
@@ -174,6 +245,25 @@ def get_d_bar(dm1=None, dm2=None):
     d_bar -= lib.einsum("mv, un -> munv", dm1, dm1)
 
     return d_bar
+
+def get_d_hat(dm1=None, dm2=None):
+    """
+    function to construct \mathring{\hat{D}}^{p1p2}{q1q2} (Eq 21) in
+    Ref: Phys. Chem. Chem. Phys., 2012, 14, 7809–7820
+
+    Args:
+        dm1: 2D array. 1-RDM in mo basis
+        dm2: 4D array. 2-RDM in mo basis
+
+    Returns:
+        d_bar: 4D array. Modified 2-RDM
+    """
+
+    d_hat = dm2.copy()
+    d_hat -= 2./3. * lib.einsum("mn, uv -> munv", dm1, dm1)
+    d_hat += 2./3. * 1./2 * lib.einsum("mv, un -> munv", dm1, dm1)
+
+    return d_hat
 
 
 class CTSD(lib.StreamObject):
@@ -243,6 +333,7 @@ class CTSD(lib.StreamObject):
         self.conv_tol_e = 1e-7
         self.conv_tol_normt = 1e-6
         self.diis_space = 8
+        self.get_res_counter = 0
         ##################################################
         # don't modify the following attributes, they are not input options
         self.mo_coeff = mo_coeff
@@ -420,9 +511,14 @@ class CTSD(lib.StreamObject):
         self.dump_flags()
 
         if method == "newton_krylov":
-            ts = newton_krylov(self.get_residual, t_init)
+            ts = newton_krylov(self.get_residual, t_init, inner_maxiter=10)
             self._t1s, self._t2s = self.vec_to_amps(ts)
-            e_ct = self.get_hf_energy()
+            e_ct = self.get_e_tot()
+            e_corr = self.get_e_corr()
+            mo_e = self.mo_energy
+            logger.info(self, "Total # residual builds = %s, E_corr(CTSD) = %.15g", self.get_res_counter, e_corr)
+            logger.debug1(self, "    mo_energy = %s", mo_e)
+
         elif method == "diis":
             de = np.inf
             e_old = 0.
@@ -444,16 +540,17 @@ class CTSD(lib.StreamObject):
                     self._t2s -= dt2 * step
                     t_init = self.amps_to_vec(self._t1s, self._t2s)
                     t_init = mydiis.update(t_init)
-                    e_ct = self.get_hf_energy()
+                    e_ct = self.get_e_tot()
                     de = e_ct - e_old
                     e_old = e_ct
-                    e_corr = e_ct - self.mf.e_tot 
+                    e_corr = self.get_e_corr()
                     logger.info(self, "cycle = %s, E_corr(CTSD) = %.15g, dE = %.7e, |dt| = %.7e", i, e_corr, de, dt_norm)
                     logger.debug1(self, "    mo_energy = %s", mo_e)
         else:
             raise NotImplementedError
 
 
+        logger.info(self, "E_tot(CTSD) = %s", e_ct)
         return e_ct
     
     def get_residual(self, t_ravel):
@@ -461,10 +558,16 @@ class CTSD(lib.StreamObject):
         self.build_hbar(bch=True, n_max=self.n_bch)
         r1 = self.get_singles_residual()
         r2 = self.get_doubles_residual()
+        r = self.amps_to_vec(r1, r2)
+        e_corr = self.get_e_corr()
+        dt_norm = np.linalg.norm(r)
+        self.get_res_counter += 1
+        v_xypq = self.ct_o2[self.t_nmo, self.t_nmo, :self.t_nmo, :self.t_nmo]
+        fock_xp = self.get_fock()[self.t_nmo:, :self.t_nmo]
+        logger.debug1(self, "# calls to res = %s, E_corr(CTSD) = %.15g, |dt| = %.7e",  self.get_res_counter, e_corr, dt_norm)
         logger.debug1(self, "    |t1| = %.15g, |t2| = %.15g", np.linalg.norm(self._t1s), np.linalg.norm(self._t2s))
         logger.debug1(self, "    |r1| = %.15g, |r2| = %.15g", np.linalg.norm(r1), np.linalg.norm(r2))
-        logger.debug1(self, "    |c1| = %.15g, |c2| = %.15g", np.linalg.norm(self.ct_o1), np.linalg.norm(self.ct_o2))
-        r = self.amps_to_vec(r1, r2)
+        logger.debug1(self, "    |f_xp| = %.15g, |v_xypq| = %.15g", np.linalg.norm(fock_xp), np.linalg.norm(v_xypq))
 
         return r
     
@@ -525,21 +628,31 @@ class CTSD(lib.StreamObject):
         r2_bar -= np.einsum("mnpq, mnxy -> xypq", v_mnpq, dm2[:, :, t_nmo:, t_nmo:])
 
 
-        slices = [0, nmo, 0, nmo, t_nmo, nmo,
-                  0, t_nmo, 0, nmo, 0, t_nmo]
-        d3 = get_d3_slice(dm1, dm2, slices)
-        v_mnxu = self.ct_o2[:, :, t_nmo:, :]
-        r2_bar += 2. * np.einsum("mnxu, mnypuq -> xypq", v_mnxu, d3)
 
-        slices = [0, nmo, 0, nmo, 0, t_nmo,
-                  t_nmo, nmo,  0, nmo, t_nmo, nmo]
-        d3 = get_d3_slice(dm1, dm2, slices)
+
+
+        v_mnxu = self.ct_o2[:, :, t_nmo:, :]
+        dm2_hat = get_d_hat(self.dm1, self.dm2)
+        r2_bar += 2. * contr_dm3("mnxu", "mnypuq", v_mnxu, self.dm1, dm2_hat, self.t_nmo, self.nmo)
         v_mnpu = self.ct_o2[:, :, :t_nmo, :]
-        r2_bar -= 2. * np.einsum("mnpu, mnqxuy -> xypq", v_mnpu, d3)
+        r2_bar -= 2. * contr_dm3("mnpu", "mnqxuy", v_mnpu, self.dm1, dm2_hat, self.t_nmo, self.nmo)
+        # slices = [0, nmo, 0, nmo, t_nmo, nmo,
+        #           0, t_nmo, 0, nmo, 0, t_nmo]
+        # d3 = get_d3_slice(dm1, dm2, slices)
+        # v_mnxu = self.ct_o2[:, :, t_nmo:, :]
+        # r2_bar += 2. * np.einsum("mnxu, mnypuq -> xypq", v_mnxu, d3)
+
+        # slices = [0, nmo, 0, nmo, 0, t_nmo,
+        #           t_nmo, nmo,  0, nmo, t_nmo, nmo]
+        # d3 = get_d3_slice(dm1, dm2, slices)
+        # v_mnpu = self.ct_o2[:, :, :t_nmo, :]
+        # r2_bar -= 2. * np.einsum("mnpu, mnqxuy -> xypq", v_mnpu, d3)
+
         r2 += r2_bar * 0.5
         r2 += r2_bar.transpose((1, 0, 3, 2)) * 0.5
 
         return r2
+    
 
     def init_amps(self, t1=None, t2=None):
         """
@@ -721,6 +834,7 @@ class CTSD(lib.StreamObject):
         self.t2["xyai"] *= 1. / delta_xyai * (1. - np.exp(-sigma * delta_xyai**2)) 
 
         return self.t1, self.t2
+
     def get_f12_amps(self):
         raise NotImplementedError
 
@@ -892,23 +1006,32 @@ class CTSD(lib.StreamObject):
             dm2 = self.dm2
 
         # construct Do^{p1p2e2}_{a1q2a2}
-        dm2 = get_d_zero(dm1, dm2)
+        #dm2 = get_d_zero(dm1, dm2)
+
+
+        #v_mnxu = o2[:, :, self.t_nmo:, :]
+        #t2 = self._t2s
+
+        # for single reference case
+        c0 = 0.
+        #c0 = 2.0 * contr_dm3("mnxu", "xypq, mnypuq ->", v_mnxu, t2,
+        #                      d3)
 
         # need a slice of the full ERI
-        v_mnxu = o2[:, :, self.t_nmo:, :]
-        slices = [0, self.nmo, 0, self.nmo, self.t_nmo, self.nmo,
-                  0, self.t_nmo, 0, self.nmo, 0, self.t_nmo]
-        d3 = get_d3_slice(dm1, dm2, slices)
-        t2 = self._t2s
-        c0 = 2.0 * lib.einsum("mnxu, xypq, mnypuq ->", v_mnxu, t2,
-                              d3)
-        v_mnpu = o2[:, :, :self.t_nmo, :]
-        slices = [0, self.nmo, 0, self.nmo, 0, self.t_nmo,
-                  self.t_nmo, self.nmo, 0, self.nmo, self.t_nmo,
-                  self.nmo]
-        d3 = get_d3_slice(dm1, dm2, slices)
-        c0 -= 2.0 * lib.einsum("mnpu, xyqr, mnrxuy ->", v_mnpu, t2,
-                               d3)
+        #v_mnxu = o2[:, :, self.t_nmo:, :]
+        #slices = [0, self.nmo, 0, self.nmo, self.t_nmo, self.nmo,
+        #          0, self.t_nmo, 0, self.nmo, 0, self.t_nmo]
+        #d3 = get_d3_slice(dm1, dm2, slices)
+        #t2 = self._t2s
+        #c0 = 2.0 * lib.einsum("mnxu, xypq, mnypuq ->", v_mnxu, t2,
+        #                      d3)
+        #v_mnpu = o2[:, :, :self.t_nmo, :]
+        #slices = [0, self.nmo, 0, self.nmo, 0, self.t_nmo,
+        #          self.t_nmo, self.nmo, 0, self.nmo, self.t_nmo,
+        #          self.nmo]
+        #d3 = get_d3_slice(dm1, dm2, slices)
+        #c0 -= 2.0 * lib.einsum("mnpu, xyqr, mnrxuy ->", v_mnpu, t2,
+        #                       d3)
 
         return c0
 
@@ -1304,7 +1427,7 @@ class CTSD(lib.StreamObject):
         c1_prime = symmetrize(c1_prime)
         return c1_prime
 
-    def get_hf_energy(self, c0=None, c1=None, c2=None):
+    def get_e_tot(self, c0=None, c1=None, c2=None):
         if c0 is None:
             c0 = self.ct_0
         if c1 is None:
@@ -1321,6 +1444,9 @@ class CTSD(lib.StreamObject):
         e_hf += self.mf.energy_nuc()
         return e_hf
     
+    def get_e_corr(self):
+        return self.get_e_tot() - self.mf.e_tot
+        
     def get_fock(self, c1=None, c2=None):
         if c1 is None:
             c1 = self.ct_o1
@@ -1504,7 +1630,7 @@ class CTSD(lib.StreamObject):
             eris.fock = self.get_fock()
         else:
             eris.fock = fock
-        eris.e_hf = self.get_hf_energy()
+        eris.e_hf = self.get_e_tot()
         if fock is None:
             eris.mo_energy = self.mo_energy
         else:
