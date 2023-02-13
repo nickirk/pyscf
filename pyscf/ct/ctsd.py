@@ -511,7 +511,7 @@ class CTSD(lib.StreamObject):
         self.dump_flags()
 
         if method == "newton_krylov":
-            ts = newton_krylov(self.get_residual, t_init, inner_maxiter=10)
+            ts = newton_krylov(self.get_residual, t_init, maxiter=self.max_cycle)
             self._t1s, self._t2s = self.vec_to_amps(ts)
             e_ct = self.get_e_tot()
             e_corr = self.get_e_corr()
@@ -562,7 +562,7 @@ class CTSD(lib.StreamObject):
         e_corr = self.get_e_corr()
         dt_norm = np.linalg.norm(r)
         self.get_res_counter += 1
-        v_xypq = self.ct_o2[self.t_nmo, self.t_nmo, :self.t_nmo, :self.t_nmo]
+        v_xypq = self.ct_o2[self.t_nmo:, self.t_nmo:, :self.t_nmo, :self.t_nmo]
         fock_xp = self.get_fock()[self.t_nmo:, :self.t_nmo]
         logger.debug1(self, "# calls to res = %s, E_corr(CTSD) = %.15g, |dt| = %.7e",  self.get_res_counter, e_corr, dt_norm)
         logger.debug1(self, "    |t1| = %.15g, |t2| = %.15g", np.linalg.norm(self._t1s), np.linalg.norm(self._t2s))
