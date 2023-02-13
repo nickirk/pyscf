@@ -334,6 +334,7 @@ class CTSD(lib.StreamObject):
         self.conv_tol_normt = 1e-6
         self.diis_space = 8
         self.get_res_counter = 0
+        self.gs_only = False
         ##################################################
         # don't modify the following attributes, they are not input options
         self.mo_coeff = mo_coeff
@@ -488,7 +489,7 @@ class CTSD(lib.StreamObject):
 
         return self.ct_0, self.ct_o1, self.ct_o2
     
-    def solve(self, method="diis", max_cycle=100, step=0.1, n_bch=None):
+    def solve(self, method="diis", max_cycle=100, step=0.1, n_bch=None, gs_only=True):
         '''
          This function solves the generalized Brillouin condition self-consistently
         '''
@@ -507,6 +508,7 @@ class CTSD(lib.StreamObject):
             self.n_bch = n_bch
         if max_cycle is not None:
             self.max_cycle = max_cycle
+        self.gs_only = gs_only
 
         self.dump_flags()
 
@@ -557,17 +559,27 @@ class CTSD(lib.StreamObject):
         self._t1s, self._t2s = self.vec_to_amps(t_ravel)
         self.build_hbar(bch=True, n_max=self.n_bch)
         r1 = self.get_singles_residual()
+        # put active-external block to 0
         r2 = self.get_doubles_residual()
+        if self.gs_only:
+            r1[:, self.c_nmo:self.t_nmo] = 0.
+            r2[:, :, self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo] = 0.
+            r2[:, :, self.c_nmo:self.t_nmo, :self.c_nmo] = 0.
+            r2[:, :, :self.c_nmo, self.c_nmo:self.t_nmo] = 0.
         r = self.amps_to_vec(r1, r2)
         e_corr = self.get_e_corr()
         dt_norm = np.linalg.norm(r)
         self.get_res_counter += 1
         v_xypq = self.ct_o2[self.t_nmo:, self.t_nmo:, :self.t_nmo, :self.t_nmo]
+        v_xyab = self.ct_o2[self.t_nmo:, self.t_nmo:, self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo]
+        v_xyai = self.ct_o2[self.t_nmo:, self.t_nmo:, self.c_nmo:self.t_nmo, :self.c_nmo]
         fock_xp = self.get_fock()[self.t_nmo:, :self.t_nmo]
+        fock_xa = self.get_fock()[self.t_nmo:, self.c_nmo:self.t_nmo]
         logger.debug1(self, "# calls to res = %s, E_corr(CTSD) = %.15g, |dt| = %.7e",  self.get_res_counter, e_corr, dt_norm)
         logger.debug1(self, "    |t1| = %.15g, |t2| = %.15g", np.linalg.norm(self._t1s), np.linalg.norm(self._t2s))
         logger.debug1(self, "    |r1| = %.15g, |r2| = %.15g", np.linalg.norm(r1), np.linalg.norm(r2))
         logger.debug1(self, "    |f_xp| = %.15g, |v_xypq| = %.15g", np.linalg.norm(fock_xp), np.linalg.norm(v_xypq))
+        logger.debug1(self, "    |f_xa| = %.15g, |v_xyab| = %.15g, |v_xyai| = %.15g", np.linalg.norm(fock_xa), np.linalg.norm(v_xyab), np.linalg.norm(v_xyai))
 
         return r
     
