@@ -583,9 +583,9 @@ class CTSD(lib.StreamObject):
         v_xyai = self.ct_o2[self.t_nmo:, self.t_nmo:, self.c_nmo:self.t_nmo, :self.c_nmo]
         v_xyij = self.ct_o2[self.t_nmo:, self.t_nmo:, :self.c_nmo, :self.c_nmo]
         v_abij = self.ct_o2[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo, :self.c_nmo, :self.c_nmo]
-        fock_xp = self.get_fock()[self.c_nmo:, :self.t_nmo]
-        fock_xa = self.get_fock()[self.c_nmo:, self.c_nmo:self.t_nmo]
-        fock_xi = self.get_fock()[self.c_nmo:, :self.c_nmo]
+        fock_xp = self.get_fock()[self.t_nmo:, :self.t_nmo]
+        fock_xa = self.get_fock()[self.t_nmo:, self.c_nmo:self.t_nmo]
+        fock_xi = self.get_fock()[self.t_nmo:, :self.c_nmo]
         fock_ai = self.get_fock()[self.c_nmo:self.t_nmo, :self.c_nmo]
         logger.info(self, "# calls to res = %s, E_corr(CTSD) = %.15g, |dt| = %.7e",  self.get_res_counter, e_corr, dt_norm)
         logger.debug1(self, "    |t1| = %.15g, |t2| = %.15g", np.linalg.norm(self._t1s), np.linalg.norm(self._t2s))
