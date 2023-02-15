@@ -645,7 +645,7 @@ class KnownValues(unittest.TestCase):
         mf.kernel()
         cisolver = fci.FCI(mf)
         myct = ctsd.CTSD(mf, a_nmo=0)
-        e_ct = myct.solve(method='diis', max_cycle=300, n_bch=2)
+        e_ct = myct.solve(method='newton_krylov', max_cycle=300, n_bch=2)
         e_hf = mf.e_tot
         e_corr = e_ct - e_hf
         assert np.isclose(-0.13652442, e_corr)
