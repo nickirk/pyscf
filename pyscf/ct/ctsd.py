@@ -138,7 +138,7 @@ def get_d3_slice(dm1=None, dm2=None, slices=None):
 def find_inds_bound(ind, c_nmo, t_nmo, nmo):
     ind_bounds = []
     for p in ind:
-        if p in "xy":
+        if p in "efgh":
             ind_bounds.append([c_nmo, nmo])
         elif p in "mnuv":
             ind_bounds.append([0, nmo])
@@ -162,47 +162,47 @@ def contr_dm3(o2_inds, o3_inds, v, dm1, dm2, c_nmo, t_nmo, nmo):
     dm1_inds = p1+p4
     dm2_inds = p2+p3+p5+p6
     dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, c_nmo, t_nmo, nmo)
-    r = lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> xypq", v, dm1_part, dm2_part)
+    r = lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> efpq", v, dm1_part, dm2_part)
 
     dm1_inds = p1+p5
     dm2_inds = p2+p3+p4+p6
     dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, c_nmo, t_nmo, nmo)
-    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> xypq", v, dm1_part, dm2_part)
+    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> efpq", v, dm1_part, dm2_part)
 
     dm1_inds = p1+p6
     dm2_inds = p2+p3+p5+p4
     dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, c_nmo, t_nmo, nmo)
-    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> xypq", v, dm1_part, dm2_part)
+    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> efpq", v, dm1_part, dm2_part)
 
     dm1_inds = p2+p5
     dm2_inds = p3+p1+p6+p4
     dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, c_nmo, t_nmo, nmo)
-    r += lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+"-> xypq", v, dm1_part, dm2_part)
+    r += lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+"-> efpq", v, dm1_part, dm2_part)
 
     dm1_inds = p2+p6
     dm2_inds = p3+p1+p5+p4
     dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, c_nmo, t_nmo, nmo)
-    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> xypq", v, dm1_part, dm2_part)
+    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> efpq", v, dm1_part, dm2_part)
 
     dm1_inds = p2+p4
     dm2_inds = p3+p1+p6+p5
     dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, c_nmo, t_nmo, nmo)
-    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+"-> xypq", v, dm1_part, dm2_part)
+    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+"-> efpq", v, dm1_part, dm2_part)
 
     dm1_inds = p3+p6
     dm2_inds = p1+p2+p4+p5
     dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, c_nmo, t_nmo, nmo)
-    r += lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> xypq", v, dm1_part, dm2_part)
+    r += lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> efpq", v, dm1_part, dm2_part)
 
     dm1_inds = p3+p4
     dm2_inds = p1+p2+p6+p5
     dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, c_nmo, t_nmo, nmo)
-    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> xypq", v, dm1_part, dm2_part)
+    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> efpq", v, dm1_part, dm2_part)
 
     dm1_inds = p3+p5
     dm2_inds = p1+p2+p4+p6
     dm1_part, dm2_part = part_dms(dm1_inds, dm2_inds, dm1, dm2, c_nmo, t_nmo, nmo)
-    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> xypq", v, dm1_part, dm2_part)
+    r -= 0.5 * lib.einsum(o2_inds+", "+dm1_inds+", "+dm2_inds+" -> efpq", v, dm1_part, dm2_part)
 
     return r
 
@@ -446,7 +446,7 @@ class CTSD(lib.StreamObject):
             h_mn = self.h_core
         
         if self.build_hbar_use_bch:
-            logger.info(self, "    using BCH expansion up to max %s terms", self.n_bch)
+            logger.debug1(self, "    using BCH expansion up to max %s terms", self.n_bch)
             h_norm = np.inf
             # bch construction of H bar, \bar{H} = H + \sum_n 1/n! [[[...]]]
             ct_0 = 0.
@@ -542,10 +542,10 @@ class CTSD(lib.StreamObject):
                     dt_norm = np.linalg.norm(dt)
                     dt1, dt2 = self.vec_to_amps(dt)
                     mo_e = self.mo_energy
-                    e_xp = -(mo_e[self.c_nmo:, None] - mo_e[None, :self.t_nmo])
-                    e_xypq = lib.einsum("xi, yj -> xyij", e_xp, e_xp)
-                    dt1 /= e_xp
-                    dt2 /= e_xypq
+                    e_ep = -(mo_e[self.c_nmo:, None] - mo_e[None, :self.t_nmo])
+                    e_efpq = lib.einsum("ei, fj -> efij", e_ep, e_ep)
+                    dt1 /= e_ep
+                    dt2 /= e_efpq
                     self._t1s -= dt1 * step
                     self._t2s -= dt2 * step
                     t_init = self.amps_to_vec(self._t1s, self._t2s)
@@ -587,7 +587,7 @@ class CTSD(lib.StreamObject):
         fock_xa = self.get_fock()[self.c_nmo:, self.c_nmo:self.t_nmo]
         fock_xi = self.get_fock()[self.c_nmo:, :self.c_nmo]
         fock_ai = self.get_fock()[self.c_nmo:self.t_nmo, :self.c_nmo]
-        logger.debug1(self, "# calls to res = %s, E_corr(CTSD) = %.15g, |dt| = %.7e",  self.get_res_counter, e_corr, dt_norm)
+        logger.info(self, "# calls to res = %s, E_corr(CTSD) = %.15g, |dt| = %.7e",  self.get_res_counter, e_corr, dt_norm)
         logger.debug1(self, "    |t1| = %.15g, |t2| = %.15g", np.linalg.norm(self._t1s), np.linalg.norm(self._t2s))
         logger.debug1(self, "    |r1| = %.15g, |r2| = %.15g", np.linalg.norm(r1), np.linalg.norm(r2))
         logger.debug1(self, "    |f_xp| = %.15g, |v_xypq| = %.15g", np.linalg.norm(fock_xp), np.linalg.norm(v_xypq))
@@ -623,12 +623,12 @@ class CTSD(lib.StreamObject):
         t_nmo = self.t_nmo
         c_nmo = self.c_nmo
         r1 = np.zeros(self._t1s.shape)
-        r1 += np.einsum("nx, np -> xp", self.ct_o1[:, c_nmo:], dm1[:, :t_nmo])
-        r1 -= np.einsum("np, nx -> xp", self.ct_o1[:, :t_nmo], dm1[:, c_nmo:])
-        v_mnxu = self.ct_o2[:, :, c_nmo:, :]
-        r1 += np.einsum("mnxu, mnpu -> xp", v_mnxu, dm2[:, :, :t_nmo, :])
+        r1 += np.einsum("ne, np -> ep", self.ct_o1[:, c_nmo:], dm1[:, :t_nmo])
+        r1 -= np.einsum("np, ne -> ep", self.ct_o1[:, :t_nmo], dm1[:, c_nmo:])
+        v_mneu = self.ct_o2[:, :, c_nmo:, :]
+        r1 += np.einsum("mneu, mnpu -> ep", v_mneu, dm2[:, :, :t_nmo, :])
         v_mnpu = self.ct_o2[:, :, :t_nmo, :]
-        r1 -= np.einsum("mnpu, mnxu -> xp", v_mnpu, dm2[:, :, c_nmo:, :])
+        r1 -= np.einsum("mnpu, mneu -> ep", v_mnpu, dm2[:, :, c_nmo:, :])
         r1 *= 2.
 
         return r1
@@ -644,26 +644,26 @@ class CTSD(lib.StreamObject):
 
         r2 = np.zeros(self._t2s.shape)
         r2_bar = np.zeros(self._t2s.shape)
-        r2_bar += 2. * np.einsum("nx, nypq -> xypq", self.ct_o1[:, c_nmo:], dm2[:, c_nmo:, :t_nmo, :t_nmo])
-        r2_bar -= 2. * np.einsum("np, nqxy -> xypq", self.ct_o1[:, :t_nmo], dm2[:, :t_nmo, c_nmo:, c_nmo:])
+        r2_bar += 2. * np.einsum("ne, nfpq -> efpq", self.ct_o1[:, c_nmo:], dm2[:, c_nmo:, :t_nmo, :t_nmo])
+        r2_bar -= 2. * np.einsum("np, nqef -> efpq", self.ct_o1[:, :t_nmo], dm2[:, :t_nmo, c_nmo:, c_nmo:])
         r2 = 0.5 * r2_bar.copy() 
         r2 += 0.5 * r2_bar.transpose((1, 0, 3, 2))
 
-        v_mnxy = self.ct_o2[:, :, c_nmo:, c_nmo:]
+        v_mnef = self.ct_o2[:, :, c_nmo:, c_nmo:]
         v_mnpq = self.ct_o2[:, :, :t_nmo, :t_nmo]
 
-        r2_bar = np.einsum("mnxy, mnpq -> xypq", v_mnxy, dm2[:, :, :t_nmo, :t_nmo])
-        r2_bar -= np.einsum("mnpq, mnxy -> xypq", v_mnpq, dm2[:, :, c_nmo:, c_nmo:])
+        r2_bar = np.einsum("mnef, mnpq -> efpq", v_mnef, dm2[:, :, :t_nmo, :t_nmo])
+        r2_bar -= np.einsum("mnpq, mnef -> efpq", v_mnpq, dm2[:, :, c_nmo:, c_nmo:])
 
 
 
 
 
-        v_mnxu = self.ct_o2[:, :, c_nmo:, :]
+        v_mneu = self.ct_o2[:, :, c_nmo:, :]
         dm2_hat = get_d_hat(self.dm1, self.dm2)
-        r2_bar += 2. * contr_dm3("mnxu", "mnypuq", v_mnxu, self.dm1, dm2_hat, self.c_nmo, self.t_nmo, self.nmo)
+        r2_bar += 2. * contr_dm3("mneu", "mnfpuq", v_mneu, self.dm1, dm2_hat, self.c_nmo, self.t_nmo, self.nmo)
         v_mnpu = self.ct_o2[:, :, :t_nmo, :]
-        r2_bar -= 2. * contr_dm3("mnpu", "mnqxuy", v_mnpu, self.dm1, dm2_hat, self.c_nmo, self.t_nmo, self.nmo)
+        r2_bar -= 2. * contr_dm3("mnpu", "mnqeuf", v_mnpu, self.dm1, dm2_hat, self.c_nmo, self.t_nmo, self.nmo)
         # slices = [0, nmo, 0, nmo, t_nmo, nmo,
         #           0, t_nmo, 0, nmo, 0, t_nmo]
         # d3 = get_d3_slice(dm1, dm2, slices)
@@ -756,13 +756,13 @@ class CTSD(lib.StreamObject):
         mo_e_i = mo_e[:self.c_nmo]
         # if regularization is needed, one can do it here.
         mo_e_a = mo_e[self.c_nmo:self.t_nmo]
-        mo_e_x = mo_e[self.c_nmo:]
+        mo_e_x = mo_e[self.t_nmo:]
 
         # occ to external
         e_xi = -(mo_e_x[:, None] - mo_e_i[None, :])
 
-        self.t1["xi"] = fock[self.c_nmo:, :self.c_nmo].copy()
-        self.t2["xyij"] = self.eri[self.c_nmo:, self.c_nmo:, :self.c_nmo,
+        self.t1["xi"] = fock[self.t_nmo:, :self.c_nmo].copy()
+        self.t2["xyij"] = self.eri[self.t_nmo:, self.t_nmo:, :self.c_nmo,
                                :self.c_nmo].copy()
 
         self.t1["xi"] /= e_xi
@@ -771,11 +771,11 @@ class CTSD(lib.StreamObject):
 
         if with_active:
             e_xa = -(mo_e_x[:, None] - mo_e_a[None, :])
-            self.t1["xa"] = fock[self.c_nmo:, self.c_nmo:self.t_nmo].copy()
+            self.t1["xa"] = fock[self.t_nmo:, self.c_nmo:self.t_nmo].copy()
 
-            self.t2["xyab"] = eri[self.c_nmo:, self.c_nmo:,
-                            self.c_nmo:self.c_nmo:, self.c_nmo:self.t_nmo].copy()
-            self.t2["xyai"] = eri[self.c_nmo:, self.c_nmo:,
+            self.t2["xyab"] = eri[self.t_nmo:, self.t_nmo:,
+                            self.c_nmo:self.t_nmo:, self.c_nmo:self.t_nmo].copy()
+            self.t2["xyai"] = eri[self.t_nmo:, self.t_nmo:,
                               self.c_nmo:self.t_nmo, :self.c_nmo].copy()
             self.t1["xa"] /= e_xa
             self.t2["xyab"] /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
@@ -799,21 +799,21 @@ class CTSD(lib.StreamObject):
         mo_e_i = mo_energy[:self.c_nmo]
         # if regularization is needed, one can do it here.
         mo_e_a = mo_energy[self.c_nmo:self.t_nmo]
-        mo_e_x = mo_energy[self.c_nmo:]
+        mo_e_x = mo_energy[self.t_nmo:]
 
         e_xi = -(mo_e_x[:, None] - mo_e_i[None, :])
         #e_xa = -(mo_e_x[:, None] - epsilon)
         shift = -epsilon * np.ones(self.a_nmo)
         e_xa = -(mo_e_x[:, None] - shift[None, :])
 
-        self.t1["xi"] = fock_mn[self.c_nmo:, :self.c_nmo].copy()
-        self.t1["xa"] = fock_mn[self.c_nmo:, self.c_nmo:self.t_nmo].copy()
+        self.t1["xi"] = fock_mn[self.t_nmo:, :self.c_nmo].copy()
+        self.t1["xa"] = fock_mn[self.t_nmo:, self.c_nmo:self.t_nmo].copy()
 
-        self.t2["xyij"] = self.eri[self.c_nmo:, self.c_nmo:, :self.c_nmo,
+        self.t2["xyij"] = self.eri[self.t_nmo:, self.t_nmo:, :self.c_nmo,
                                :self.c_nmo].copy()
-        self.t2["xyab"] = self.eri[self.c_nmo:, self.c_nmo:,
+        self.t2["xyab"] = self.eri[self.t_nmo:, self.t_nmo:,
                         self.c_nmo:self.c_nmo:, self.c_nmo:self.t_nmo].copy()
-        self.t2["xyai"] = self.eri[self.c_nmo:, self.c_nmo:,
+        self.t2["xyai"] = self.eri[self.t_nmo:, self.t_nmo:,
                           self.c_nmo:self.t_nmo, :self.c_nmo].copy()
 
 
@@ -841,19 +841,19 @@ class CTSD(lib.StreamObject):
         mo_e_i = mo_energy[:self.c_nmo]
         # if regularization is needed, one can do it here.
         mo_e_a = mo_energy[self.c_nmo:self.t_nmo]
-        mo_e_x = mo_energy[self.c_nmo:]
+        mo_e_x = mo_energy[self.t_nmo:]
 
         e_xi = -(mo_e_x[:, None] - mo_e_i[None, :])
         e_xa = -(mo_e_x[:, None] - mo_e_a[None, :])
 
-        self.t1["xi"] = fock_mn[self.c_nmo:, :self.c_nmo].copy()
-        self.t1["xa"] = fock_mn[self.c_nmo:, self.c_nmo:self.t_nmo].copy()
+        self.t1["xi"] = fock_mn[self.t_nmo:, :self.c_nmo].copy()
+        self.t1["xa"] = fock_mn[self.t_nmo:, self.c_nmo:self.t_nmo].copy()
 
-        self.t2["xyab"] = self.eri[self.c_nmo:, self.c_nmo:,
+        self.t2["xyab"] = self.eri[self.t_nmo:, self.t_nmo:,
                         self.c_nmo:self.c_nmo:, self.c_nmo:self.t_nmo].copy()
-        self.t2["xyij"] = self.eri[self.c_nmo:, self.c_nmo:, :self.c_nmo,
+        self.t2["xyij"] = self.eri[self.t_nmo:, self.t_nmo:, :self.c_nmo,
                                :self.c_nmo].copy()
-        self.t2["xyai"] = self.eri[self.c_nmo:, self.c_nmo:,
+        self.t2["xyai"] = self.eri[self.t_nmo:, self.t_nmo:,
                           self.c_nmo:self.t_nmo, :self.c_nmo].copy()
 
         self.t1["xi"] /= e_xi
@@ -949,15 +949,15 @@ class CTSD(lib.StreamObject):
             o1 = self.ao2mo(o1)
 
         t1 = self._t1s
-        o1_mx = o1[:, self.c_nmo:]
+        o1_me = o1[:, self.c_nmo:]
         o1_mp = o1[:, :self.t_nmo]
         # equ (35) in Ref: Phys. Chem. Chem. Phys., 2012, 14, 7809–7820
         c1_mn = np.zeros([self.nmo, self.nmo])
         # only the following terms are relevant to the target space
-        c1_mn[:, :self.t_nmo] = 2. * lib.einsum("mx, xp -> mp", o1_mx, t1)
+        c1_mn[:, :self.t_nmo] = 2. * lib.einsum("me, ep -> mp", o1_me, t1)
 
         # connections between target and external space
-        c1_mn[:, self.c_nmo:] -= 2. * lib.einsum("mp, xp -> mx", o1_mp, t1)
+        c1_mn[:, self.c_nmo:] -= 2. * lib.einsum("mp, ep -> me", o1_mp, t1)
 
         c1_mn = symmetrize(c1_mn)
 
@@ -982,14 +982,14 @@ class CTSD(lib.StreamObject):
         if o_mn is None:
             o_mn = self.mf.get_fock()
             o_mn = self.ao2mo(o_mn)
-        o_mx = o_mn[:, self.c_nmo:]
+        o_me = o_mn[:, self.c_nmo:]
         o_mp = o_mn[:, :self.t_nmo]
         c2 = np.zeros(self.eri.shape)
         c2[:, self.c_nmo:, :self.t_nmo, :self.t_nmo] = 4.*lib.einsum(
-            "mx, xypq -> mypq", o_mx, t2
+            "me, efpq -> mfpq", o_me, t2
             )
         c2[:, :self.t_nmo, self.c_nmo:, self.c_nmo:] += -4.*lib.einsum(
-            "mp, xypq -> mqxy", o_mp, t2
+            "mp, efpq -> mqef", o_mp, t2
         )
 
         c2 = symmetrize(c2)
@@ -1017,8 +1017,8 @@ class CTSD(lib.StreamObject):
             o2 = self.eri
         t1 = self._t1s
         c2_prime = np.zeros(o2.shape)
-        c2_prime[:, :, :self.t_nmo, :] = 4. * np.einsum("mnxu, xp -> mnpu", o2[:, :, self.c_nmo:, :], t1)
-        c2_prime[:, :, self.c_nmo:,:] -= 4. * np.einsum("mnpu, xp -> mnxu", o2[:, :, :self.t_nmo, :], t1)
+        c2_prime[:, :, :self.t_nmo, :] = 4. * np.einsum("mneu, ep -> mnpu", o2[:, :, self.c_nmo:, :], t1)
+        c2_prime[:, :, self.c_nmo:,:] -= 4. * np.einsum("mnpu, ep -> mneu", o2[:, :, :self.t_nmo, :], t1)
         c2_prime = symmetrize(c2_prime)
         return c2_prime
 
@@ -1048,7 +1048,7 @@ class CTSD(lib.StreamObject):
 
         # for single reference case
         c0 = 0.
-        #c0 = 2.0 * contr_dm3("mnxu", "xypq, mnypuq ->", v_mnxu, t2,
+        #c0 = 2.0 * contr_dm3("mnxu", "xfpq, mnfpuq ->", v_mnxu, t2,
         #                      d3)
 
         # need a slice of the full ERI
@@ -1057,14 +1057,14 @@ class CTSD(lib.StreamObject):
         #          0, self.t_nmo, 0, self.nmo, 0, self.t_nmo]
         #d3 = get_d3_slice(dm1, dm2, slices)
         #t2 = self._t2s
-        #c0 = 2.0 * lib.einsum("mnxu, xypq, mnypuq ->", v_mnxu, t2,
+        #c0 = 2.0 * lib.einsum("mnxu, xfpq, mnfpuq ->", v_mnxu, t2,
         #                      d3)
         #v_mnpu = o2[:, :, :self.t_nmo, :]
         #slices = [0, self.nmo, 0, self.nmo, 0, self.t_nmo,
         #          self.c_nmo, self.nmo, 0, self.nmo, self.c_nmo,
         #          self.nmo]
         #d3 = get_d3_slice(dm1, dm2, slices)
-        #c0 -= 2.0 * lib.einsum("mnpu, xyqr, mnrxuy ->", v_mnpu, t2,
+        #c0 -= 2.0 * lib.einsum("mnpu, xfqr, mnrxuf ->", v_mnpu, t2,
         #                       d3)
 
         return c0
@@ -1091,87 +1091,87 @@ class CTSD(lib.StreamObject):
         # need the original t2
         t2 = self._t2s
         # second term in 46b
-        dm2_bar_xipj = dm2_bar[self.c_nmo:, :self.c_nmo, :self.t_nmo,
+        dm2_bar_eipj = dm2_bar[self.c_nmo:, :self.c_nmo, :self.t_nmo,
                        :self.c_nmo]
-        s1_xipj = -1. / 2 * lib.einsum("xypq, xipj -> yiqj", t2,
-                                       dm2_bar_xipj)
-        dm2_bar_xijp = dm2_bar[self.c_nmo:, :self.c_nmo,
+        s1_eipj = -1. / 2 * lib.einsum("efpq, eipj -> fiqj", t2,
+                                       dm2_bar_eipj)
+        dm2_bar_eijp = dm2_bar[self.c_nmo:, :self.c_nmo,
                        :self.c_nmo, :self.t_nmo]
         # first term in 46b
-        s1_xipj -= 1. / 2 * lib.einsum("xyqp, xijp -> yiqj", t2,
-                                       dm2_bar_xijp)
+        s1_eipj -= 1. / 2 * lib.einsum("efqp, eijp -> fiqj", t2,
+                                       dm2_bar_eijp)
 
         # constructing s2
-        dm2_bar_iypq = dm2_bar[:self.c_nmo, self.c_nmo:,
+        dm2_bar_ifpq = dm2_bar[:self.c_nmo, self.c_nmo:,
                        :self.t_nmo, :self.t_nmo]
-        s2_xi = lib.einsum("xypq, iypq -> xi", t2, dm2_bar_iypq)
+        s2_ei = lib.einsum("efpq, ifpq -> ei", t2, dm2_bar_ifpq)
 
         # constructing s3
-        dm2_bar_ipxy = dm2_bar[:self.c_nmo, :self.t_nmo,
+        dm2_bar_ipef = dm2_bar[:self.c_nmo, :self.t_nmo,
                        self.c_nmo:, self.c_nmo:]
-        s3_ip = lib.einsum("xypq, iqxy -> ip", t2, dm2_bar_ipxy)
+        s3_ip = lib.einsum("efpq, iqef -> ip", t2, dm2_bar_ipef)
 
         # constructing s4
         dm2_bar_ijpq = dm2_bar[:self.c_nmo, :self.c_nmo,
                        :self.t_nmo, :self.t_nmo]
-        s4_xyij = 1. / 2 * lib.einsum("xypq, ijpq -> xyij", t2, dm2_bar_ijpq)
+        s4_efij = 1. / 2 * lib.einsum("efpq, ijpq -> efij", t2, dm2_bar_ijpq)
 
         # constructing s5
-        dm2_bar_ijxy = dm2_bar[:self.c_nmo, :self.c_nmo,
+        dm2_bar_ijef = dm2_bar[:self.c_nmo, :self.c_nmo,
                        self.c_nmo:, self.c_nmo:]
-        s5_ijpq = 1. / 2 * lib.einsum("xypq, ijxy -> ijpq", t2, dm2_bar_ijxy)
+        s5_ijpq = 1. / 2 * lib.einsum("efpq, ijef -> ijpq", t2, dm2_bar_ijef)
 
         # s6
         # TODO: This contraction is very heavy. Need optimization!!
         s6_mn = lib.einsum("mnuv, pnuv -> pm", o2, dm2_bar)
-        s6_px = s6_mn[:self.t_nmo, self.c_nmo:]
-        s6_xp = s6_mn[self.c_nmo:, :self.t_nmo]
+        s6_pe = s6_mn[:self.t_nmo, self.c_nmo:]
+        s6_ep = s6_mn[self.c_nmo:, :self.t_nmo]
 
         # s0
-        s0_xipj = lib.einsum("xypq, xipj -> yiqj", t2, dm2_bar_xipj)
-        s0_xipj -= 1./2 * lib.einsum("xyqp, xipj -> yiqj", t2, dm2_bar_xipj)
+        s0_eipj = lib.einsum("efpq, eipj -> fiqj", t2, dm2_bar_eipj)
+        s0_eipj -= 1./2 * lib.einsum("efqp, eipj -> fiqj", t2, dm2_bar_eipj)
 
         # constructing c1_prime
         c1_prime_mn = np.zeros([self.nmo, self.nmo])
         # adding contributions from e1_prime_pq
         # first term in equation 44
-        v_mixj = o2[:, :self.c_nmo, self.c_nmo:,
+        v_miej = o2[:, :self.c_nmo, self.c_nmo:,
                     :self.c_nmo]
-        v_mijx = o2[:, :self.c_nmo, :self.c_nmo,
+        v_mije = o2[:, :self.c_nmo, :self.c_nmo,
                     self.c_nmo:]
-        c1_prime_mn[:, :self.t_nmo] -= lib.einsum("mixj, xipj -> mp", v_mixj,
-                                                  s0_xipj)
-        c1_prime_mn[:, :self.t_nmo] -= lib.einsum("mijx, xipj -> mp", v_mijx,
-                                                  s1_xipj)
+        c1_prime_mn[:, :self.t_nmo] -= lib.einsum("miej, eipj -> mp", v_miej,
+                                                  s0_eipj)
+        c1_prime_mn[:, :self.t_nmo] -= lib.einsum("mije, eipj -> mp", v_mije,
+                                                  s1_eipj)
 
         # second term in equation 44
-        v_minx = o2[:, :self.c_nmo, :, self.c_nmo:].copy()
+        v_mine = o2[:, :self.c_nmo, :, self.c_nmo:].copy()
         # why is there a transpose here???
-        v_mixn = o2[:, :self.c_nmo, self.c_nmo:, :].copy()
-        c1_prime_mn -= lib.einsum("minx, xi -> mn", v_minx, s2_xi)
-        c1_prime_mn += 1. / 2 * lib.einsum("mixn, xi -> mn", v_mixn, s2_xi)
+        v_mien = o2[:, :self.c_nmo, self.c_nmo:, :].copy()
+        c1_prime_mn -= lib.einsum("mine, ei -> mn", v_mine, s2_ei)
+        c1_prime_mn += 1. / 2 * lib.einsum("mien, ei -> mn", v_mien, s2_ei)
 
         # third term in equation 44
-        v_ijxm = o2[:self.c_nmo, :self.c_nmo,
+        v_ijem = o2[:self.c_nmo, :self.c_nmo,
                     self.c_nmo:, :]
-        c1_prime_mn[:, self.c_nmo:] += lib.einsum("ijxm, xyij -> my",
-                                                  v_ijxm, s4_xyij)
+        c1_prime_mn[:, self.c_nmo:] += lib.einsum("ijem, efij -> mf",
+                                                  v_ijem, s4_efij)
 
         # fourth term in equation 44
         c1_prime_mn[:self.t_nmo, self.c_nmo:] -= \
-            lib.einsum("xypq, qy -> px", t2, s6_px)
+            lib.einsum("efpq, qf -> pe", t2, s6_pe)
         
         c1_prime_mn[:self.t_nmo, self.c_nmo:] += \
-            0.5 * lib.einsum("xyqp, qy -> px", t2, s6_px)
+            0.5 * lib.einsum("efqp, qf -> pe", t2, s6_pe)
 
         # adding contributions from a1_prime_pq, note that the overall sign is -
         # first term in equation 45
         v_mipj = o2[:, :self.c_nmo, :self.t_nmo, :self.c_nmo]
         v_mijp = o2[:, :self.c_nmo, :self.c_nmo, :self.t_nmo]
-        c1_prime_mn[:, self.c_nmo:] += lib.einsum("mipj, xipj -> mx",
-                                                  v_mipj, s0_xipj)
-        c1_prime_mn[:, self.c_nmo:] += lib.einsum("mijp, xipj -> mx",
-                                                  v_mijp, s1_xipj)
+        c1_prime_mn[:, self.c_nmo:] += lib.einsum("mipj, eipj -> me",
+                                                  v_mipj, s0_eipj)
+        c1_prime_mn[:, self.c_nmo:] += lib.einsum("mijp, eipj -> me",
+                                                  v_mijp, s1_eipj)
 
         # second term in equation 45
         v_minp = o2[:, :self.c_nmo, :, :self.t_nmo].copy()
@@ -1186,9 +1186,9 @@ class CTSD(lib.StreamObject):
 
         # fourth term in equation 45
         c1_prime_mn[:self.t_nmo, self.c_nmo:] += \
-            lib.einsum("xypq, yq -> px", t2, s6_xp)
+            lib.einsum("efpq, fq -> pe", t2, s6_ep)
         c1_prime_mn[:self.t_nmo, self.c_nmo:] -= \
-            0.5 * lib.einsum("xyqp, yq -> px", t2, s6_xp)
+            0.5 * lib.einsum("efqp, fq -> pe", t2, s6_ep)
 
         c1_prime_mn *= 2.
 
@@ -1211,14 +1211,14 @@ class CTSD(lib.StreamObject):
         # adding e_dprime_mnuv contribution
         # TODO: the on-the-fly slicing is not the most efficient way, fix it
         # first term in equation 48
-        v_mnxy = o2[:, :, self.c_nmo:, self.c_nmo:]
+        v_mnef = o2[:, :, self.c_nmo:, self.c_nmo:]
         c2_dprime_generic[:, :, :self.t_nmo, :self.t_nmo] += \
-            1. / 2 * lib.einsum("mnxy, xypq -> mnpq", v_mnxy, t2)
+            1. / 2 * lib.einsum("mnef, efpq -> mnpq", v_mnef, t2)
         
         # adding contributions from a_dprime_mnuv, notice the overall - sign
         v_mnpq = o2[:, :, :self.t_nmo, :self.t_nmo]
         c2_dprime_generic[:, :, self.c_nmo:, self.c_nmo:] -= \
-            1. / 2 * lib.einsum("mnpq, xypq -> mnxy", v_mnpq, t2)
+            1. / 2 * lib.einsum("mnpq, efpq -> mnef", v_mnpq, t2)
         
         c2_dprime_generic *= 4
         c2_dprime_generic = symmetrize(c2_dprime_generic)
@@ -1243,13 +1243,13 @@ class CTSD(lib.StreamObject):
 
         # Construct T0-T3 intermediates first.
         t2 = self._t2s
-        cap_t0_xyip = lib.einsum("xypq, ip -> xyiq", t2, dm1[:self.c_nmo,
+        cap_t0_efip = lib.einsum("efpq, ip -> efiq", t2, dm1[:self.c_nmo,
                                                          :self.t_nmo])
-        cap_t1_ixpq = lib.einsum("xypq, ix -> iypq", t2, dm1[:self.c_nmo,
+        cap_t1_iepq = lib.einsum("efpq, ie -> ifpq", t2, dm1[:self.c_nmo,
                                                          self.c_nmo:])
-        cap_t2_xp = lib.einsum("xypq, xp -> yq", t2, dm1[self.c_nmo:,
+        cap_t2_ep = lib.einsum("efpq, ep -> fq", t2, dm1[self.c_nmo:,
                                                      :self.t_nmo])
-        cap_t2_xp -= 1. / 2 * lib.einsum("xyqp, xp -> yq", t2,
+        cap_t2_ep -= 1. / 2 * lib.einsum("efqp, ep -> fq", t2,
                                          dm1[self.c_nmo:,
                                          :self.t_nmo])
         cap_t3_mn = lib.einsum("mnuv, nv -> mu", o2, dm1)
@@ -1264,43 +1264,43 @@ class CTSD(lib.StreamObject):
         
         # second term in equ 48
         # term 2 in note e"
-        v_mxni = o2[:, self.c_nmo:, :, :self.c_nmo]
+        v_meni = o2[:, self.c_nmo:, :, :self.c_nmo]
         c2_dprime_mnuv[:, :self.t_nmo, :, self.c_nmo:] += \
-            lib.einsum("mxni, xyip -> mpny", v_mxni, cap_t0_xyip)
+            lib.einsum("meni, efip -> mpnf", v_meni, cap_t0_efip)
 
 
         # term 6 in note e"
         c2_dprime_mnuv[:, :self.t_nmo, :, self.c_nmo:] -= \
-            1. / 2 * lib.einsum("mxni, yxip -> mpny", v_mxni, cap_t0_xyip)
+            1. / 2 * lib.einsum("meni, feip -> mpnf", v_meni, cap_t0_efip)
 
 
         # term 5 in note e"
-        v_mxin = o2[:, self.c_nmo:, :self.c_nmo, :]
+        v_mein = o2[:, self.c_nmo:, :self.c_nmo, :]
         c2_dprime_mnuv[:, :self.t_nmo, :, self.c_nmo:] -= \
-            1. / 2 * lib.einsum("mxin, xyip -> mpny", v_mxin, cap_t0_xyip)
+            1. / 2 * lib.einsum("mein, efip -> mpnf", v_mein, cap_t0_efip)
 
 
         # third term in equ 48
         # term 4 in note e"
         c2_dprime_mnuv[:, :self.t_nmo, self.c_nmo:, :] -= \
-            1. / 2 * lib.einsum("mxin, yxip -> mpyn", v_mxin, cap_t0_xyip)
+            1. / 2 * lib.einsum("mein, feip -> mpfn", v_mein, cap_t0_efip)
 
 
         # fourth term in equ 48
-        v_mnxi = o2[:, :, self.c_nmo:, :self.c_nmo]
+        v_mnei = o2[:, :, self.c_nmo:, :self.c_nmo]
         c2_dprime_mnuv[:, :, :self.t_nmo, :self.t_nmo] -= \
-            1. / 2 * lib.einsum("mnxi, ixpq -> mnqp", v_mnxi, cap_t1_ixpq)
+            1. / 2 * lib.einsum("mnei, iepq -> mnqp", v_mnei, cap_t1_iepq)
         
 
         # fifth term in equ 48
-        v_mnxu = o2[:, :, self.c_nmo:, :]
+        v_mneu = o2[:, :, self.c_nmo:, :]
         c2_dprime_mnuv[:, :, :self.t_nmo, :] += \
-            lib.einsum("mnxu, xp -> mnpu", v_mnxu, cap_t2_xp)
+            lib.einsum("mneu, ep -> mnpu", v_mneu, cap_t2_ep)
 
         # sixth term in equ 48
         # term 1 + 3 in note e"
         c2_dprime_mnuv[:, self.c_nmo:, :self.t_nmo, :self.t_nmo] += \
-            lib.einsum("xypq, mx -> mypq", t2,
+            lib.einsum("efpq, me -> mfpq", t2,
                         cap_t3_mn[:, self.c_nmo:])
 
 
@@ -1308,31 +1308,31 @@ class CTSD(lib.StreamObject):
         # second term in equ 49
         v_mpni = o2[:, :self.t_nmo, :, :self.c_nmo]
         c2_dprime_mnuv[:, self.c_nmo:, :, :self.t_nmo] -= \
-            lib.einsum("mpni, ixpq -> mxnq", v_mpni, cap_t1_ixpq)
+            lib.einsum("mpni, iepq -> menq", v_mpni, cap_t1_iepq)
         c2_dprime_mnuv[:, self.c_nmo:, :, :self.t_nmo] += \
-            1. / 2 * lib.einsum("mpni, ixpq -> mxnq", v_mpni, cap_t1_ixpq)
+            1. / 2 * lib.einsum("mpni, iepq -> menq", v_mpni, cap_t1_iepq)
         v_mpin = o2[:, :self.t_nmo, :self.c_nmo, :]
         c2_dprime_mnuv[:, self.c_nmo:, :, :self.t_nmo] += \
-            1. / 2 * lib.einsum("mpin, ixpq -> mxnq", v_mpin, cap_t1_ixpq)
+            1. / 2 * lib.einsum("mpin, iepq -> menq", v_mpin, cap_t1_iepq)
 
         # third term in equ 49
         c2_dprime_mnuv[:, self.c_nmo:, :self.t_nmo, :] += \
-            1. / 2 * lib.einsum("mpin, ixqp -> mxqn", v_mpin, cap_t1_ixpq)
+            1. / 2 * lib.einsum("mpin, ieqp -> meqn", v_mpin, cap_t1_iepq)
 
 
         # fourth term in equ 49
         v_mnpi = o2[:, :, :self.t_nmo, :self.c_nmo]
         c2_dprime_mnuv[:, :, self.c_nmo:, self.c_nmo:] += \
-            1. / 2 * lib.einsum("mnpi, xyip -> mnyx", v_mnpi, cap_t0_xyip)
+            1. / 2 * lib.einsum("mnpi, efip -> mnfe", v_mnpi, cap_t0_efip)
         
         # fifth term in equ 49
         v_mnpu = o2[:, :, :self.t_nmo, :]
         c2_dprime_mnuv[:, :, self.c_nmo:, :] -= \
-            lib.einsum("mnpu, xp -> mnxu", v_mnpu, cap_t2_xp)
+            lib.einsum("mnpu, ep -> mneu", v_mnpu, cap_t2_ep)
 
         # sixth term in equ 49
         c2_dprime_mnuv[:, :self.t_nmo, self.c_nmo:,
-        self.c_nmo:] -= lib.einsum("xypq, mp -> mqxy", t2,
+        self.c_nmo:] -= lib.einsum("efpq, mp -> mqef", t2,
                                    cap_t3_mn[:, :self.t_nmo])
 
         c2_dprime_mnuv *= 4.
@@ -1623,14 +1623,14 @@ class CTSD(lib.StreamObject):
         return self.t1, self.t2
 
     def part_t2s(self):
-        t_xyij = self._t2s[:, :, :self.c_nmo, :self.c_nmo]
-        t_xyab = self._t2s[:, :, self.c_nmo:, self.c_nmo:]
-        t_xyai = self._t2s[:, :, self.c_nmo:, :self.c_nmo]
+        t_xyij = self._t2s[self.a_nmo:, self.a_nmo:, :self.c_nmo, :self.c_nmo]
+        t_xyab = self._t2s[self.a_nmo:, self.a_nmo:, self.c_nmo:, self.c_nmo:]
+        t_xyai = self._t2s[self.a_nmo:, self.a_nmo:, self.c_nmo:, :self.c_nmo]
         self.t2 = {"xyij": t_xyij, "xyab": t_xyab, "xyai": t_xyai}
 
     def part_t1s(self):
-        t_xi = self._t1s[:, :self.c_nmo]
-        t_xa = self._t1s[:, self.c_nmo:]
+        t_xi = self._t1s[self.a_nmo:, :self.c_nmo]
+        t_xa = self._t1s[self.a_nmo:, self.c_nmo:]
         self.t1 = {"xi": t_xi, "xa": t_xa}
 
     def collect_amps(self):
@@ -1639,14 +1639,14 @@ class CTSD(lib.StreamObject):
         return self.t1s, self.t2s
 
     def collect_t2s(self):
-        self._t2s[:, :, :self.c_nmo, :self.c_nmo] = self.t2["xyij"] 
-        self._t2s[:, :, self.c_nmo:, self.c_nmo:] = self.t2["xyab"]
-        self._t2s[:, :, self.c_nmo:, :self.c_nmo] = self.t2["xyai"]
-        self._t2s[:, :, :self.c_nmo:, self.c_nmo:] = self.t2["xyai"].transpose((0,1,3,2))
+        self._t2s[self.a_nmo:, self.a_nmo:, :self.c_nmo, :self.c_nmo] = self.t2["xyij"] 
+        self._t2s[self.a_nmo:, self.a_nmo:, self.c_nmo:, self.c_nmo:] = self.t2["xyab"]
+        self._t2s[self.a_nmo:, self.a_nmo:, self.c_nmo:, :self.c_nmo] = self.t2["xyai"]
+        self._t2s[self.a_nmo:, self.a_nmo:, :self.c_nmo:, self.c_nmo:] = self.t2["xyai"].transpose((0,1,3,2))
 
     def collect_t1s(self):
-        self._t1s[:, :self.c_nmo] = self.t1["xi"]
-        self._t1s[:, self.c_nmo:] = self.t1["xa"]
+        self._t1s[self.a_nmo:, :self.c_nmo] = self.t1["xi"]
+        self._t1s[self.a_nmo:, self.c_nmo:] = self.t1["xa"]
 
 
     
