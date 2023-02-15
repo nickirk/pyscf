@@ -374,10 +374,11 @@ class CTSD(lib.StreamObject):
         log.info('CTSD nocc = %s, a_nmo = %s, e_nmo = %s, t_nmo = %s', self.nocc, self.a_nmo, self.e_nmo, self.t_nmo)
         log.info('max_cycle = %d', self.max_cycle)
         log.info('build_hbar_use_bch = %s', self.build_hbar_use_bch)
+        log.info('gs_only = %s', self.gs_only)
         if self.build_hbar_use_bch:
             log.info('n_bch = %d', self.n_bch)
         else:
-            log.info('amps_algo = %d', self.amps_algo)
+            log.info('amps_algo = %s', self.amps_algo)
         log.info('conv_tol_e = %g', self.conv_tol_e)
         log.info('conv_tol_normt = %s', self.conv_tol_normt)
         log.info('diis_space = %d', self.diis_space)
@@ -573,13 +574,16 @@ class CTSD(lib.StreamObject):
         v_xypq = self.ct_o2[self.t_nmo:, self.t_nmo:, :self.t_nmo, :self.t_nmo]
         v_xyab = self.ct_o2[self.t_nmo:, self.t_nmo:, self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo]
         v_xyai = self.ct_o2[self.t_nmo:, self.t_nmo:, self.c_nmo:self.t_nmo, :self.c_nmo]
+        v_xyij = self.ct_o2[self.t_nmo:, self.t_nmo:, :self.c_nmo, :self.c_nmo]
         fock_xp = self.get_fock()[self.t_nmo:, :self.t_nmo]
         fock_xa = self.get_fock()[self.t_nmo:, self.c_nmo:self.t_nmo]
+        fock_xi = self.get_fock()[self.t_nmo:, :self.c_nmo]
         logger.debug1(self, "# calls to res = %s, E_corr(CTSD) = %.15g, |dt| = %.7e",  self.get_res_counter, e_corr, dt_norm)
         logger.debug1(self, "    |t1| = %.15g, |t2| = %.15g", np.linalg.norm(self._t1s), np.linalg.norm(self._t2s))
         logger.debug1(self, "    |r1| = %.15g, |r2| = %.15g", np.linalg.norm(r1), np.linalg.norm(r2))
         logger.debug1(self, "    |f_xp| = %.15g, |v_xypq| = %.15g", np.linalg.norm(fock_xp), np.linalg.norm(v_xypq))
         logger.debug1(self, "    |f_xa| = %.15g, |v_xyab| = %.15g, |v_xyai| = %.15g", np.linalg.norm(fock_xa), np.linalg.norm(v_xyab), np.linalg.norm(v_xyai))
+        logger.debug1(self, "    |f_xi| = %.15g, |v_xyij| = %.15g", np.linalg.norm(fock_xi), np.linalg.norm(v_xyij))
 
         return r
     
@@ -726,20 +730,26 @@ class CTSD(lib.StreamObject):
                                     self.c_nmo])
         return self.t1, self.t2
 
-    def get_mp2_amps(self, with_active=False):
+    def get_mp2_amps(self, fock=None, eri=None, with_active=False):
 
-        fock_mn = self.mf.get_fock()
-        fock_mn = self.ao2mo(fock_mn)
+        if fock is None:
+            fock = self.mf.get_fock()
+            fock = self.ao2mo(fock)
+        
+        if eri is None:
+            eri = self.eri
+        
 
-        mo_e_i = self.mf.mo_energy[:self.c_nmo]
+        mo_e = fock.diagonal()
+        mo_e_i = mo_e[:self.c_nmo]
         # if regularization is needed, one can do it here.
-        mo_e_a = self.mf.mo_energy[self.c_nmo:self.t_nmo]
-        mo_e_x = self.mf.mo_energy[self.t_nmo:]
+        mo_e_a = mo_e[self.c_nmo:self.t_nmo]
+        mo_e_x = mo_e[self.t_nmo:]
 
         # occ to external
         e_xi = -(mo_e_x[:, None] - mo_e_i[None, :])
 
-        self.t1["xi"] = fock_mn[self.t_nmo:, :self.c_nmo].copy()
+        self.t1["xi"] = fock[self.t_nmo:, :self.c_nmo].copy()
         self.t2["xyij"] = self.eri[self.t_nmo:, self.t_nmo:, :self.c_nmo,
                                :self.c_nmo].copy()
 
@@ -749,11 +759,11 @@ class CTSD(lib.StreamObject):
 
         if with_active:
             e_xa = -(mo_e_x[:, None] - mo_e_a[None, :])
-            self.t1["xa"] = fock_mn[self.t_nmo:, self.c_nmo:self.t_nmo].copy()
+            self.t1["xa"] = fock[self.t_nmo:, self.c_nmo:self.t_nmo].copy()
 
-            self.t2["xyab"] = self.eri[self.t_nmo:, self.t_nmo:,
+            self.t2["xyab"] = eri[self.t_nmo:, self.t_nmo:,
                             self.c_nmo:self.t_nmo:, self.c_nmo:self.t_nmo].copy()
-            self.t2["xyai"] = self.eri[self.t_nmo:, self.t_nmo:,
+            self.t2["xyai"] = eri[self.t_nmo:, self.t_nmo:,
                               self.c_nmo:self.t_nmo, :self.c_nmo].copy()
             self.t1["xa"] /= e_xa
             self.t2["xyab"] /= lib.direct_sum("xa+yb -> xyab", e_xa, e_xa)
@@ -1498,8 +1508,7 @@ class CTSD(lib.StreamObject):
         Returns:
             ct_mo_coeff: matrix [nmo, nmo]. Transformation matrix for integrals.
         """
-        logger.info(self, "ct mo_energy = ")
-        logger.info(self, self.mo_energy)
+        logger.info(self, "ct mo_energy = %s", self.mo_energy)
         mol = gto.M()
         mol.verbose = 7
         mol.nelectron = self.nocc * 2
@@ -1511,8 +1520,7 @@ class CTSD(lib.StreamObject):
         mf._eri = self.ct_o2.transpose((0, 2, 1, 3))
         dm0 = np.diag(self.mf.mo_occ)
         mf.kernel(dm0=dm0)
-        logger.info(self, "mo_energy = ")
-        logger.info(self, mf.mo_energy)
+        logger.info(self, "mo_energy = %s", mf.mo_energy)
         mol.incore_anyway = True
         self.ct_o1 = self.ao2mo(self.ct_o1, mf.mo_coeff)
         self.ct_o2 = self.ao2mo(self.ct_o2, mf.mo_coeff, to_phy=False)
@@ -1622,6 +1630,7 @@ class CTSD(lib.StreamObject):
         self._t2s[:, :, :self.c_nmo, :self.c_nmo] = self.t2["xyij"] 
         self._t2s[:, :, self.c_nmo:, self.c_nmo:] = self.t2["xyab"]
         self._t2s[:, :, self.c_nmo:, :self.c_nmo] = self.t2["xyai"]
+        self._t2s[:, :, :self.c_nmo:, self.c_nmo:] = self.t2["xyai"].transpose((0,1,3,2))
 
     def collect_t1s(self):
         self._t1s[:, :self.c_nmo] = self.t1["xi"]
