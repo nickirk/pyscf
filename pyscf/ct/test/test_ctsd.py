@@ -19,7 +19,7 @@ def setUpModule():
     #mol.output = '/dev/null'
     mol.atom = '''
         N  0.  0 0;
-        N  0.  0 1.09768;
+        N  0.  0 0.7;
         '''
     #mol.atom = '''
     #    F  0.  0 0;
@@ -42,11 +42,11 @@ def setUpModule():
     #mf.chkfile = tempfile.NamedTemporaryFile().name
     mf.conv_tol_grad = 1e-8
     mf.kernel()
-    #cisolver = fci.FCI(mf)
-    #print('E(FCI) = %.12f' % cisolver.kernel()[0])
-    #mycc = cc.CCSD(mf)
-    #mycc.kernel()
-    #print('E(CCSD) = %.12f' % mycc.e_tot)
+    cisolver = fci.FCI(mf)
+    print('E(FCI) = %.12f' % cisolver.kernel()[0])
+    mycc = cc.CCSD(mf)
+    mycc.kernel()
+    print('E(CCSD) = %.12f' % mycc.e_tot)
     # active space is set to 0. The reference energy of the
     # CT Ham should reproduce MP2 energy
     myct = ctsd.CTSD(mf, a_nmo=0)
@@ -651,7 +651,7 @@ class KnownValues(unittest.TestCase):
         assert np.isclose(-0.13652442, e_corr)
 
     def test_solve(self):
-        e_ct = myct.solve(method='newton_krylov', max_cycle=1000, step=0.5)
+        e_ct = myct.solve(method='newton_krylov', max_cycle=1000, gs_only=True)
         e_hf = mf.e_tot
         e_corr = e_ct - e_hf
         #assert np.isclose(-0.13652442, e_corr)

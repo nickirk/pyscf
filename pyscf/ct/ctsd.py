@@ -387,7 +387,7 @@ class CTSD(lib.StreamObject):
                  self.max_memory, lib.current_memory()[0])
         return self
 
-    def build_hbar(self, bch=False, cutoff=1e-8, n_max=10, **kwargs):
+    def build_hbar(self, bch=False, cutoff=1e-8, n_bch=None, **kwargs):
         """
         Main function which calls other functions to calculate all the parts of
         the CT Hamiltonian and assemble them.
@@ -413,13 +413,19 @@ class CTSD(lib.StreamObject):
 
         if self.eri is None:
             self.eri = self.ao2mo()
+
         if bch is not None:
             self.build_hbar_use_bch = bch
+
+        if n_bch is not None:
+            self.n_bch = n_bch
+
+        if "amps_algo" in kwargs:
+            self.amps_algo = kwargs["amps_algo"]
+
         if not bch:
             self.dump_flags()
         # initialize the amplitudes
-        if "amps_algo" in kwargs:
-            self.amps_algo = kwargs["amps_algo"]
         if "t1" in kwargs:
             t1 = kwargs["t1"] 
         else:
@@ -439,7 +445,7 @@ class CTSD(lib.StreamObject):
             h_mn = self.h_core
         
         if self.build_hbar_use_bch:
-            logger.info(self, "    using BCH expansion up to max %s terms", n_max)
+            logger.info(self, "    using BCH expansion up to max %s terms", self.n_bch)
             h_norm = np.inf
             # bch construction of H bar, \bar{H} = H + \sum_n 1/n! [[[...]]]
             ct_0 = 0.
@@ -447,7 +453,7 @@ class CTSD(lib.StreamObject):
             ct_o2 = self.eri.copy()
             commutator = (ct_0, ct_o1, ct_o2)
             n = 1
-            while h_norm > cutoff and n < n_max:
+            while h_norm > cutoff and n < self.n_bch:
                 ct_0_tmp, ct_o1_tmp, ct_o2_tmp = self.commute(*commutator)
                 fact_n_inv = 1/np.math.factorial(n) 
                 h_norm = np.linalg.norm(ct_o1_tmp) + np.linalg.norm(ct_o2_tmp) + ct_0_tmp
@@ -558,7 +564,7 @@ class CTSD(lib.StreamObject):
     
     def get_residual(self, t_ravel):
         self._t1s, self._t2s = self.vec_to_amps(t_ravel)
-        self.build_hbar(bch=True, n_max=self.n_bch)
+        self.build_hbar(bch=True, n_bch=self.n_bch)
         r1 = self.get_singles_residual()
         # put active-external block to 0
         r2 = self.get_doubles_residual()
@@ -648,21 +654,21 @@ class CTSD(lib.StreamObject):
 
 
         v_mnxu = self.ct_o2[:, :, t_nmo:, :]
-        dm2_hat = get_d_hat(self.dm1, self.dm2)
-        r2_bar += 2. * contr_dm3("mnxu", "mnypuq", v_mnxu, self.dm1, dm2_hat, self.t_nmo, self.nmo)
-        v_mnpu = self.ct_o2[:, :, :t_nmo, :]
-        r2_bar -= 2. * contr_dm3("mnpu", "mnqxuy", v_mnpu, self.dm1, dm2_hat, self.t_nmo, self.nmo)
-        # slices = [0, nmo, 0, nmo, t_nmo, nmo,
-        #           0, t_nmo, 0, nmo, 0, t_nmo]
-        # d3 = get_d3_slice(dm1, dm2, slices)
-        # v_mnxu = self.ct_o2[:, :, t_nmo:, :]
-        # r2_bar += 2. * np.einsum("mnxu, mnypuq -> xypq", v_mnxu, d3)
-
-        # slices = [0, nmo, 0, nmo, 0, t_nmo,
-        #           t_nmo, nmo,  0, nmo, t_nmo, nmo]
-        # d3 = get_d3_slice(dm1, dm2, slices)
+        # dm2_hat = get_d_hat(self.dm1, self.dm2)
+        # r2_bar += 2. * contr_dm3("mnxu", "mnypuq", v_mnxu, self.dm1, dm2_hat, self.t_nmo, self.nmo)
         # v_mnpu = self.ct_o2[:, :, :t_nmo, :]
-        # r2_bar -= 2. * np.einsum("mnpu, mnqxuy -> xypq", v_mnpu, d3)
+        # r2_bar -= 2. * contr_dm3("mnpu", "mnqxuy", v_mnpu, self.dm1, dm2_hat, self.t_nmo, self.nmo)
+        slices = [0, nmo, 0, nmo, t_nmo, nmo,
+                  0, t_nmo, 0, nmo, 0, t_nmo]
+        d3 = get_d3_slice(dm1, dm2, slices)
+        v_mnxu = self.ct_o2[:, :, t_nmo:, :]
+        r2_bar += 2. * np.einsum("mnxu, mnypuq -> xypq", v_mnxu, d3)
+
+        slices = [0, nmo, 0, nmo, 0, t_nmo,
+                  t_nmo, nmo,  0, nmo, t_nmo, nmo]
+        d3 = get_d3_slice(dm1, dm2, slices)
+        v_mnpu = self.ct_o2[:, :, :t_nmo, :]
+        r2_bar -= 2. * np.einsum("mnpu, mnqxuy -> xypq", v_mnpu, d3)
 
         r2 += r2_bar * 0.5
         r2 += r2_bar.transpose((1, 0, 3, 2)) * 0.5
