@@ -8,9 +8,9 @@ from pyscf import cc, fci
 from pyscf.cc import ccsd
 
 import os
-#os.environ["MKL_NUM_THREADS"] = "1" 
-#os.environ["NUMEXPR_NUM_THREADS"] = "1" 
-#os.environ["OMP_NUM_THREADS"] = "1" 
+#os.environ["MKL_NUM_THREADS"] = "4" 
+#os.environ["NUMEXPR_NUM_THREADS"] = "4" 
+#os.environ["OMP_NUM_THREADS"] = "4" 
 
 def setUpModule():
     global mol, mf, myct
@@ -632,20 +632,26 @@ class KnownValues(unittest.TestCase):
         myct.build_hbar(bch=True)
     
     def test_bench_lin_uccsd(self):
+        import time
         mol.atom = '''
-            He    0.000000    0.0 0.0
-            He   0.000000   0.0 1.0'''
+            N    0.000000    0.0 0.0
+            N   0.000000   0.0 1.0
+            N   0.000000   0.0 2.0
+            N   0.000000   0.0 3.0'''
         mol.unit = 'A'
-        mol.basis = 'ccpvdz'
-        mol.verbose = 4
+        mol.basis = 'ccpvtz'
+        mol.verbose = 7
         mol.build()
         mf = scf.RHF(mol)
         #mf.chkfile = tempfile.NamedTemporaryFile().name
         mf.conv_tol_grad = 1e-8
         mf.kernel()
         cisolver = fci.FCI(mf)
+        time0 = time.time()
         myct = ctsd.CTSD(mf, a_nmo=0)
         e_ct = myct.solve(method='newton_krylov', max_cycle=300, n_bch=2)
+        time1 = time.time()
+        print("Used %.5g sec", time1-time0)
         e_hf = mf.e_tot
         e_corr = e_ct - e_hf
         assert np.isclose(-0.13652442, e_corr)
