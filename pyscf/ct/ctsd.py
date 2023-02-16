@@ -489,8 +489,6 @@ class CTSD(lib.StreamObject):
             c0_f, c1_f, c2_f = self.commute(*self.commute(o1=fock_mn))
 
 
-            # final step might need to do some transformation on the eris so that
-            # other solvers can use it directly as usual integrals.
             self.ct_0 = ct_0 + c0_f/2.
             self.ct_o1 = ct_o1 + c1_f/2.
             self.ct_o2 = ct_o2 + c2_f/2.
@@ -578,22 +576,23 @@ class CTSD(lib.StreamObject):
         e_corr = self.get_e_corr()
         dt_norm = np.linalg.norm(r)
         self.get_res_counter += 1
-        v_xypq = self.ct_o2[self.t_nmo:, self.t_nmo:, :self.t_nmo, :self.t_nmo]
-        v_xyab = self.ct_o2[self.t_nmo:, self.t_nmo:, self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo]
-        v_xyai = self.ct_o2[self.t_nmo:, self.t_nmo:, self.c_nmo:self.t_nmo, :self.c_nmo]
-        v_xyij = self.ct_o2[self.t_nmo:, self.t_nmo:, :self.c_nmo, :self.c_nmo]
-        v_abij = self.ct_o2[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo, :self.c_nmo, :self.c_nmo]
-        fock_xp = self.get_fock()[self.t_nmo:, :self.t_nmo]
-        fock_xa = self.get_fock()[self.t_nmo:, self.c_nmo:self.t_nmo]
-        fock_xi = self.get_fock()[self.t_nmo:, :self.c_nmo]
-        fock_ai = self.get_fock()[self.c_nmo:self.t_nmo, :self.c_nmo]
-        logger.info(self, "# calls to res = %s, E_corr(CTSD) = %.15g, |dt| = %.7e",  self.get_res_counter, e_corr, dt_norm)
-        logger.debug1(self, "    |t1| = %.15g, |t2| = %.15g", np.linalg.norm(self._t1s), np.linalg.norm(self._t2s))
-        logger.debug1(self, "    |r1| = %.15g, |r2| = %.15g", np.linalg.norm(r1), np.linalg.norm(r2))
-        logger.debug1(self, "    |f_xp| = %.15g, |v_xypq| = %.15g", np.linalg.norm(fock_xp), np.linalg.norm(v_xypq))
-        logger.debug1(self, "    |f_xa| = %.15g, |v_xyab| = %.15g, |v_xyai| = %.15g", np.linalg.norm(fock_xa), np.linalg.norm(v_xyab), np.linalg.norm(v_xyai))
-        logger.debug1(self, "    |f_xi| = %.15g, |v_xyij| = %.15g", np.linalg.norm(fock_xi), np.linalg.norm(v_xyij))
-        logger.debug1(self, "    |f_ai| = %.15g, |v_abij| = %.15g", np.linalg.norm(fock_ai), np.linalg.norm(v_abij))
+        if self.verbose >= logger.DEBUG1:
+            v_xypq = self.ct_o2[self.t_nmo:, self.t_nmo:, :self.t_nmo, :self.t_nmo]
+            v_xyab = self.ct_o2[self.t_nmo:, self.t_nmo:, self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo]
+            v_xyai = self.ct_o2[self.t_nmo:, self.t_nmo:, self.c_nmo:self.t_nmo, :self.c_nmo]
+            v_xyij = self.ct_o2[self.t_nmo:, self.t_nmo:, :self.c_nmo, :self.c_nmo]
+            v_abij = self.ct_o2[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo, :self.c_nmo, :self.c_nmo]
+            fock_xp = self.get_fock()[self.t_nmo:, :self.t_nmo]
+            fock_xa = self.get_fock()[self.t_nmo:, self.c_nmo:self.t_nmo]
+            fock_xi = self.get_fock()[self.t_nmo:, :self.c_nmo]
+            fock_ai = self.get_fock()[self.c_nmo:self.t_nmo, :self.c_nmo]
+            logger.info(self, "# calls to res = %s, E_corr(CTSD) = %.15g, |dt| = %.7e",  self.get_res_counter, e_corr, dt_norm)
+            logger.debug1(self, "    |t1| = %.15g, |t2| = %.15g", np.linalg.norm(self._t1s), np.linalg.norm(self._t2s))
+            logger.debug1(self, "    |r1| = %.15g, |r2| = %.15g", np.linalg.norm(r1), np.linalg.norm(r2))
+            logger.debug1(self, "    |f_xp| = %.15g, |v_xypq| = %.15g", np.linalg.norm(fock_xp), np.linalg.norm(v_xypq))
+            logger.debug1(self, "    |f_xa| = %.15g, |v_xyab| = %.15g, |v_xyai| = %.15g", np.linalg.norm(fock_xa), np.linalg.norm(v_xyab), np.linalg.norm(v_xyai))
+            logger.debug1(self, "    |f_xi| = %.15g, |v_xyij| = %.15g", np.linalg.norm(fock_xi), np.linalg.norm(v_xyij))
+            logger.debug1(self, "    |f_ai| = %.15g, |v_abij| = %.15g", np.linalg.norm(fock_ai), np.linalg.norm(v_abij))
 
         return r
     
