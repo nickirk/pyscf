@@ -365,7 +365,7 @@ class CTSD(lib.StreamObject):
         if dm1 is None:
             dm1 = np.diag(self.mf.mo_occ)
         if dm2 is None:
-            dm2 = (np.einsum('ij, kl -> ikjl', dm1, dm1) - np.einsum(
+            dm2 = (einsum('ij, kl -> ikjl', dm1, dm1) - einsum(
                 'il, kj -> ikjl', dm1, dm1) / 2.)
         self.dm1 = dm1
         self.dm2 = dm2
@@ -632,12 +632,12 @@ class CTSD(lib.StreamObject):
         t_nmo = self.t_nmo
         c_nmo = self.c_nmo
         r1 = np.zeros(self._t1s.shape)
-        r1 += np.einsum("ne, np -> ep", self.ct_o1[:, c_nmo:], dm1[:, :t_nmo])
-        r1 -= np.einsum("np, ne -> ep", self.ct_o1[:, :t_nmo], dm1[:, c_nmo:])
+        r1 += einsum("ne, np -> ep", self.ct_o1[:, c_nmo:], dm1[:, :t_nmo])
+        r1 -= einsum("np, ne -> ep", self.ct_o1[:, :t_nmo], dm1[:, c_nmo:])
         v_mneu = self.ct_o2[:, :, c_nmo:, :]
-        r1 += np.einsum("mneu, mnpu -> ep", v_mneu, dm2[:, :, :t_nmo, :])
+        r1 += einsum("mneu, mnpu -> ep", v_mneu, dm2[:, :, :t_nmo, :])
         v_mnpu = self.ct_o2[:, :, :t_nmo, :]
-        r1 -= np.einsum("mnpu, mneu -> ep", v_mnpu, dm2[:, :, c_nmo:, :])
+        r1 -= einsum("mnpu, mneu -> ep", v_mnpu, dm2[:, :, c_nmo:, :])
         r1 *= 2.
 
         return r1
@@ -653,16 +653,16 @@ class CTSD(lib.StreamObject):
 
         r2 = np.zeros(self._t2s.shape)
         r2_bar = np.zeros(self._t2s.shape)
-        r2_bar += 2. * np.einsum("ne, nfpq -> efpq", self.ct_o1[:, c_nmo:], dm2[:, c_nmo:, :t_nmo, :t_nmo])
-        r2_bar -= 2. * np.einsum("np, nqef -> efpq", self.ct_o1[:, :t_nmo], dm2[:, :t_nmo, c_nmo:, c_nmo:])
+        r2_bar += 2. * einsum("ne, nfpq -> efpq", self.ct_o1[:, c_nmo:], dm2[:, c_nmo:, :t_nmo, :t_nmo])
+        r2_bar -= 2. * einsum("np, nqef -> efpq", self.ct_o1[:, :t_nmo], dm2[:, :t_nmo, c_nmo:, c_nmo:])
         r2 = 0.5 * r2_bar.copy() 
         r2 += 0.5 * r2_bar.transpose((1, 0, 3, 2))
 
         v_mnef = self.ct_o2[:, :, c_nmo:, c_nmo:]
         v_mnpq = self.ct_o2[:, :, :t_nmo, :t_nmo]
 
-        r2_bar = np.einsum("mnef, mnpq -> efpq", v_mnef, dm2[:, :, :t_nmo, :t_nmo])
-        r2_bar -= np.einsum("mnpq, mnef -> efpq", v_mnpq, dm2[:, :, c_nmo:, c_nmo:])
+        r2_bar = einsum("mnef, mnpq -> efpq", v_mnef, dm2[:, :, :t_nmo, :t_nmo])
+        r2_bar -= einsum("mnpq, mnef -> efpq", v_mnpq, dm2[:, :, c_nmo:, c_nmo:])
 
 
 
@@ -677,13 +677,13 @@ class CTSD(lib.StreamObject):
         #           0, t_nmo, 0, nmo, 0, t_nmo]
         # d3 = get_d3_slice(dm1, dm2, slices)
         # v_mnxu = self.ct_o2[:, :, c_nmo:, :]
-        # r2_bar += 2. * np.einsum("mnxu, mnypuq -> xypq", v_mnxu, d3)
+        # r2_bar += 2. * einsum("mnxu, mnypuq -> xypq", v_mnxu, d3)
 
         # slices = [0, nmo, 0, nmo, 0, t_nmo,
         #           t_nmo, nmo,  0, nmo, t_nmo, nmo]
         # d3 = get_d3_slice(dm1, dm2, slices)
         # v_mnpu = self.ct_o2[:, :, :t_nmo, :]
-        # r2_bar -= 2. * np.einsum("mnpu, mnqxuy -> xypq", v_mnpu, d3)
+        # r2_bar -= 2. * einsum("mnpu, mnqxuy -> xypq", v_mnpu, d3)
 
         r2 += r2_bar * 0.5
         r2 += r2_bar.transpose((1, 0, 3, 2)) * 0.5
@@ -1026,8 +1026,8 @@ class CTSD(lib.StreamObject):
             o2 = self.eri
         t1 = self._t1s
         c2_prime = np.zeros(o2.shape)
-        c2_prime[:, :, :self.t_nmo, :] = 4. * np.einsum("mneu, ep -> mnpu", o2[:, :, self.c_nmo:, :], t1)
-        c2_prime[:, :, self.c_nmo:,:] -= 4. * np.einsum("mnpu, ep -> mneu", o2[:, :, :self.t_nmo, :], t1)
+        c2_prime[:, :, :self.t_nmo, :] = 4. * einsum("mneu, ep -> mnpu", o2[:, :, self.c_nmo:, :], t1)
+        c2_prime[:, :, self.c_nmo:,:] -= 4. * einsum("mnpu, ep -> mneu", o2[:, :, :self.t_nmo, :], t1)
         c2_prime = symmetrize(c2_prime)
         return c2_prime
 
