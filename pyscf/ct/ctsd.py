@@ -388,7 +388,7 @@ class CTSD(lib.StreamObject):
                  self.max_memory, lib.current_memory()[0])
         return self
 
-    def build_hbar(self, bch=False, cutoff=1e-8, n_bch=None, **kwargs):
+    def build_hbar(self, bch=False, cutoff=1e-8, n_bch=None, h_core=None, eri=None, **kwargs):
         """
         Main function which calls other functions to calculate all the parts of
         the CT Hamiltonian and assemble them.
@@ -412,8 +412,6 @@ class CTSD(lib.StreamObject):
             ct_o2: doubles term in \bar{H}, ndarray
         """
 
-        if self.eri is None:
-            self.eri = self.ao2mo()
 
         if bch is not None:
             self.build_hbar_use_bch = bch
@@ -439,11 +437,19 @@ class CTSD(lib.StreamObject):
 
 
         # we need the one-body part of the original Hamiltonian h_mn
-        if self.h_core is None:
-            h_mn = self.mf.get_hcore()
-            h_mn = self.ao2mo(h_mn)
+        if h_core is None:
+            if self.h_core is None:
+                self.h_core = self.mf.get_hcore()
+                self.h_core = self.ao2mo(self.h_core)
+            h_mn = self.h_core 
         else:
-            h_mn = self.h_core
+            h_mn = h_core
+
+        if eri is None:
+            if self.eri is None:
+                self.eri = self.ao2mo()
+            eri = self.eri
+        
         
         if self.build_hbar_use_bch:
             logger.debug1(self, "    using BCH expansion up to max %s terms", self.n_bch)
@@ -451,7 +457,7 @@ class CTSD(lib.StreamObject):
             # bch construction of H bar, \bar{H} = H + \sum_n 1/n! [[[...]]]
             ct_0 = 0.
             ct_o1 = h_mn.copy()
-            ct_o2 = self.eri.copy()
+            ct_o2 = eri.copy()
             commutator = (ct_0, ct_o1, ct_o2)
             n = 1
             while h_norm > cutoff and n < self.n_bch:
@@ -470,10 +476,10 @@ class CTSD(lib.StreamObject):
         else:
             # Hyleraas approximation to H bar
             logger.info(self, "    using Hylleraas functional to approximate H_bar")
-            ct_0, ct_o1, ct_o2 = self.commute(o1=h_mn, o2=self.eri)
+            ct_0, ct_o1, ct_o2 = self.commute(o1=h_mn, o2=eri)
 
             ct_o1 += h_mn
-            ct_o2 += self.eri
+            ct_o2 += eri
 
             # The second commutator 1/2*[[F, T], T]
             # First construct F, the Fock matrix, as an approximation to H
@@ -568,8 +574,8 @@ class CTSD(lib.StreamObject):
         # put active-external block to 0
         r2 = self.get_doubles_residual()
         if self.gs_only:
-            r1[:self.a_nmo, :self.c_nmo] = 0.
-            r2[:self.a_nmo, :self.a_nmo, :self.c_nmo, :self.c_nmo] = 0.
+            r1[:self.a_nmo, self.c_nmo-3:self.c_nmo] = 0.
+            r2[:self.a_nmo, :self.a_nmo, self.c_nmo-3:self.c_nmo, self.c_nmo-3:self.c_nmo] = 0.
             #r2[:, :, self.c_nmo:self.t_nmo, :self.c_nmo] = 0.
             #r2[:, :, :self.c_nmo, self.c_nmo:self.t_nmo] = 0.
         r = self.amps_to_vec(r1, r2)
@@ -582,6 +588,8 @@ class CTSD(lib.StreamObject):
             v_xyai = self.ct_o2[self.t_nmo:, self.t_nmo:, self.c_nmo:self.t_nmo, :self.c_nmo]
             v_xyij = self.ct_o2[self.t_nmo:, self.t_nmo:, :self.c_nmo, :self.c_nmo]
             v_abij = self.ct_o2[self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo, :self.c_nmo, :self.c_nmo]
+            v_axij = self.ct_o2[self.c_nmo:self.t_nmo, self.t_nmo:, :self.c_nmo, :self.c_nmo]
+            v_axib = self.ct_o2[self.c_nmo:self.t_nmo, self.t_nmo:, :self.c_nmo, self.c_nmo:self.t_nmo]
             fock_xp = self.get_fock()[self.t_nmo:, :self.t_nmo]
             fock_xa = self.get_fock()[self.t_nmo:, self.c_nmo:self.t_nmo]
             fock_xi = self.get_fock()[self.t_nmo:, :self.c_nmo]
@@ -593,6 +601,7 @@ class CTSD(lib.StreamObject):
             logger.debug1(self, "    |f_xa| = %.15g, |v_xyab| = %.15g, |v_xyai| = %.15g", np.linalg.norm(fock_xa), np.linalg.norm(v_xyab), np.linalg.norm(v_xyai))
             logger.debug1(self, "    |f_xi| = %.15g, |v_xyij| = %.15g", np.linalg.norm(fock_xi), np.linalg.norm(v_xyij))
             logger.debug1(self, "    |f_ai| = %.15g, |v_abij| = %.15g", np.linalg.norm(fock_ai), np.linalg.norm(v_abij))
+            logger.debug1(self, "    |v_axij| = %.15g, |v_axib| = %.15g", np.linalg.norm(v_axij), np.linalg.norm(v_axib))
 
         return r
     
@@ -784,7 +793,7 @@ class CTSD(lib.StreamObject):
 
     def get_shifted_mp2_amps(self, epsilon=None):
         logger.info(self, "using shifted mp2 amps.")
-        logger.info(self, "epsilon = ", epsilon)
+        logger.info(self, "epsilon = %.5g", epsilon)
 
         if self.fock is None:
             fock_mn = self.mf.get_fock()
@@ -811,7 +820,7 @@ class CTSD(lib.StreamObject):
         self.t2["xyij"] = self.eri[self.t_nmo:, self.t_nmo:, :self.c_nmo,
                                :self.c_nmo].copy()
         self.t2["xyab"] = self.eri[self.t_nmo:, self.t_nmo:,
-                        self.c_nmo:self.c_nmo:, self.c_nmo:self.t_nmo].copy()
+                        self.c_nmo:self.t_nmo, self.c_nmo:self.t_nmo].copy()
         self.t2["xyai"] = self.eri[self.t_nmo:, self.t_nmo:,
                           self.c_nmo:self.t_nmo, :self.c_nmo].copy()
 
