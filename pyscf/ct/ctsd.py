@@ -25,12 +25,14 @@ can be solved by any quantum chemistry methods;
 """
 import numpy as np
 from scipy.optimize import newton_krylov
+import h5py
 
 from pyscf import lib
 from pyscf.lib import logger, diis
 from pyscf import ao2mo, gto, scf
 from functools import reduce
 from pyscf.cc.ccsd import _ChemistsERIs
+
 
 
 def tensor_analysis(t):
@@ -1687,3 +1689,33 @@ class CTSD(lib.StreamObject):
         eris.vvvv = ao2mo.restore(1, eris.vvvv, nvir)
 
         return eris
+
+    def save_ints_on_disk(self, nelec=None, norb=None, e_core=None, h_core=None, eri=None, file="fcidump.h5"):
+        if nelec is None:
+            nelec = self.nocc * 2
+        if norb is None:
+            norb = self.nmo
+        if e_core is None:
+            e_core = self.ct_0
+        if h_core is None:
+            h_core = self.ct_o1
+        if eri is None:
+            eri = self.ct_o2
+        f = h5py.File(file, 'w')
+        f.attrs["nelec"] = nelec
+        f.attrs["norb"] = norb
+        f.create_dataset("e_core", data=e_core)
+        f.create_dataset("h_core", data=h_core)
+        f.create_dataset("eri", data=eri)
+        f.close()
+
+    def read_ints_from_disk(self, file="fcidump.h5"):
+        f = h5py.File(file, 'r')
+        assert f.attrs["norb"] == self.nmo
+        assert f.attrs["nelec"] == self.nocc * 2
+        self.ct_0 = f["e_core"][:]
+        self.ct_o1 = f["h_core"][:]
+        self.ct_o2 = f["eri"][:]
+        f.close()
+
+
