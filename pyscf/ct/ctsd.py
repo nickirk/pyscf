@@ -289,7 +289,8 @@ class CTSD(lib.StreamObject):
 
     def __init__(self, mf,
                  a_nmo=None, mo_coeff=None, mo_occ=None,
-                 dm1=None, dm2=None, h_core=None, fock=None, eri=None):
+                 dm1=None, dm2=None, t_basis=None, e_basis=None,
+                 h_core=None, fock=None, eri=None):
         """
         mf: mean field object.
         """
@@ -298,6 +299,10 @@ class CTSD(lib.StreamObject):
 
         self.mol = mf.mol
         self.mf = mf
+        self.t_basis = t_basis
+        self.e_basis = e_basis
+        if t_basis is not None and e_basis is not None:
+            self.u_basis = self.get_union_basis()
         self.verbose = self.mol.verbose
         self.stdout = self.mol.stdout
         self.max_memory = mf.max_memory
@@ -389,6 +394,32 @@ class CTSD(lib.StreamObject):
         log.info('max_memory %d MB (current use %d MB)',
                  self.max_memory, lib.current_memory()[0])
         return self
+
+    def get_union_basis(self, tol=1e-8):
+        """This function combines two basis sets into a union, 
+        with redundant basis functions removed.
+
+        Args:
+            tol: The tolerance below which two basis functions are considered
+                linear dependent and one of them shall be removed.
+
+        Returns:
+            u_basis: union basis functions in the internal format 
+                    (list of contraction coefficients).
+        """
+        mol_tmp = gto.M(atom=self.mol.atom, basis=self.e_basis)
+        mol_tmp.build()
+
+        u_basis = {}
+        for atom in self.mol._basis.keys():
+            u_basis[atom] = self._basis[atom] + mol_tmp._basis[atom]
+        
+        mol_tmp = gto.M(atom=self.mol.atom)
+        mol_tmp._basis = u_basis
+        mol_tmp.build()
+
+        return u_basis
+    
 
     def build_hbar(self, bch=False, cutoff=1e-8, n_bch=None, h_core=None, eri=None, **kwargs):
         """
