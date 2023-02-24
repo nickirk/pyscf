@@ -1677,6 +1677,7 @@ class CTSD(lib.StreamObject):
     def collect_amps(self):
         self.collect_t1s()
         self.collect_t2s()
+        self.is_amp_init = True
         return self.t1s, self.t2s
 
     def collect_t2s(self):
