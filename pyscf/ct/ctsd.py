@@ -371,6 +371,8 @@ class CTSD(lib.StreamObject):
                 'il, kj -> ikjl', dm1, dm1) / 2.)
         self.dm1 = dm1
         self.dm2 = dm2
+        self.ref_det_dm1 = None
+        self.ref_det_dm2 = None
 
         keys = set(('amps_algo'))
         self._keys = set(self.__dict__.keys()).union(keys)
@@ -534,7 +536,7 @@ class CTSD(lib.StreamObject):
 
         return self.ct_0, self.ct_o1, self.ct_o2
     
-    def solve(self, method="diis", max_cycle=100, step=0.1, n_bch=None, gs_only=True):
+    def solve(self, method="diis", max_cycle=100, step=0.1, n_bch=None, gs_only=True, dm1=None, dm2=None):
         '''
          This function solves the generalized Brillouin condition self-consistently
         '''
@@ -544,8 +546,12 @@ class CTSD(lib.StreamObject):
         #    raise  ValueError("CT integrals not evaluated!")
         
         # TODO: iterative 
-        self.get_mp2_amps()
-        self.collect_amps()
+        #self.get_mp2_amps()
+        #self.collect_amps()
+        if dm1 is not None:
+            self.ref_det_dm1 = dm1
+        if dm2 is not None:
+            self.ref_det_dm2 = dm2
         t_init = np.zeros(self.ea_nmo*self.t_nmo + self.ea_nmo**2 * self.t_nmo**2)
         self.is_amp_init = True
         e_ct = 0.
@@ -607,8 +613,8 @@ class CTSD(lib.StreamObject):
         # put active-external block to 0
         r2 = self.get_doubles_residual()
         if self.gs_only:
-            r1[:self.a_nmo, self.c_nmo-3:self.c_nmo] = 0.
-            r2[:self.a_nmo, :self.a_nmo, self.c_nmo-3:self.c_nmo, self.c_nmo-3:self.c_nmo] = 0.
+            r1[:self.a_nmo, :self.t_nmo] = 0.
+            r2[:self.a_nmo, :self.a_nmo, :self.t_nmo, :self.t_nmo] = 0.
             #r2[:, :, self.c_nmo:self.t_nmo, :self.c_nmo] = 0.
             #r2[:, :, :self.c_nmo, self.c_nmo:self.t_nmo] = 0.
         r = self.amps_to_vec(r1, r2)
@@ -659,8 +665,14 @@ class CTSD(lib.StreamObject):
     
     def get_singles_residual(self):
 
-        dm1 = self.dm1
-        dm2 = self.dm2
+        if self.ref_det_dm1 is None:
+            dm1 = self.dm1
+        else:
+            dm1 = self.ref_det_dm1
+        if self.ref_det_dm2 is None:
+            dm2 = self.dm2
+        else:
+            dm2 = self.ref_det_dm2
         t_nmo = self.t_nmo
         c_nmo = self.c_nmo
         r1 = np.zeros(self._t1s.shape)
@@ -680,8 +692,14 @@ class CTSD(lib.StreamObject):
         c_nmo = self.c_nmo
         nmo = self.nmo
         
-        dm2 = self.dm2
-        dm1 = self.dm1
+        if self.ref_det_dm1 is None:
+            dm1 = self.dm1
+        else:
+            dm1 = self.ref_det_dm1
+        if self.ref_det_dm2 is None:
+            dm2 = self.dm2
+        else:
+            dm2 = self.ref_det_dm2
 
         r2 = np.zeros(self._t2s.shape)
         r2_bar = np.zeros(self._t2s.shape)
@@ -701,10 +719,10 @@ class CTSD(lib.StreamObject):
 
 
         v_mneu = self.ct_o2[:, :, c_nmo:, :]
-        dm2_hat = get_d_hat(self.dm1, self.dm2)
-        r2_bar += 2. * contr_dm3("mneu", "mnfpuq", v_mneu, self.dm1, dm2_hat, self.c_nmo, self.t_nmo, self.nmo)
+        dm2_hat = get_d_hat(dm1, dm2)
+        r2_bar += 2. * contr_dm3("mneu", "mnfpuq", v_mneu, dm1, dm2_hat, self.c_nmo, self.t_nmo, self.nmo)
         v_mnpu = self.ct_o2[:, :, :t_nmo, :]
-        r2_bar -= 2. * contr_dm3("mnpu", "mnqeuf", v_mnpu, self.dm1, dm2_hat, self.c_nmo, self.t_nmo, self.nmo)
+        r2_bar -= 2. * contr_dm3("mnpu", "mnqeuf", v_mnpu, dm1, dm2_hat, self.c_nmo, self.t_nmo, self.nmo)
         # slices = [0, nmo, 0, nmo, t_nmo, nmo,
         #           0, t_nmo, 0, nmo, 0, t_nmo]
         # d3 = get_d3_slice(dm1, dm2, slices)

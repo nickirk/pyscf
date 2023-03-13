@@ -19,7 +19,7 @@ def setUpModule():
     #mol.output = '/dev/null'
     mol.atom = '''
         N  0.  0 0;
-        N  0.  0 0.7;
+        N  0.  0 3.0;
         '''
     #mol.atom = '''
     #    F  0.  0 0;
@@ -36,20 +36,20 @@ def setUpModule():
     #    H    0.000000   0   3'''
     mol.unit = 'A'
     #mol.basis = 'ccpvdz'
-    mol.basis = 'sto6g'
+    mol.basis = '631g'
     mol.build()
     mf = scf.RHF(mol)
     #mf.chkfile = tempfile.NamedTemporaryFile().name
     mf.conv_tol_grad = 1e-8
     mf.kernel()
-    cisolver = fci.FCI(mf)
-    print('E(FCI) = %.12f' % cisolver.kernel()[0])
-    mycc = cc.CCSD(mf)
-    mycc.kernel()
-    print('E(CCSD) = %.12f' % mycc.e_tot)
+    #cisolver = fci.FCI(mf)
+    #print('E(FCI) = %.12f' % cisolver.kernel()[0])
+    #mycc = cc.CCSD(mf)
+    #mycc.kernel()
+    #print('E(CCSD) = %.12f' % mycc.e_tot)
     # active space is set to 0. The reference energy of the
     # CT Ham should reproduce MP2 energy
-    myct = ctsd.CTSD(mf, a_nmo=0)
+    myct = ctsd.CTSD(mf, a_nmo=4)
 
 
 def tearDownModule():
@@ -655,6 +655,24 @@ class KnownValues(unittest.TestCase):
         e_hf = mf.e_tot
         e_corr = e_ct - e_hf
         #assert np.isclose(-0.13652442, e_corr)
+    
+    def test_solve_wrt_any_det(self):
+        e_ct = myct.solve(method='newton_krylov', max_cycle=1000, gs_only=True)
+        e_hf = mf.e_tot
+        e_corr = e_ct - e_hf
+
+        for a in range(3):
+            dm1 = myct.dm1.copy()
+            nocc = myct.c_nmo
+            dm1[nocc-1, nocc-1] = 0
+            dm1[nocc+a, nocc+a] = 2
+            dm2 = (np.einsum('ij, kl -> ikjl', dm1, dm1) - np.einsum(
+                'il, kj -> ikjl', dm1, dm1) / 2.)
+            myct.h_core = myct.ct_o1.copy()
+            myct.eri = myct.ct_o2.copy()
+            myct.dm1 = dm1
+            myct.dm2 = dm2
+            e_ct = myct.solve(method='newton_krylov', max_cycle=1000, gs_only=True, dm1=dm1, dm2=dm2)
 
 if __name__ == "__main__":
     print("Full Tests for CT")
