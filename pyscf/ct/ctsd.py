@@ -1528,11 +1528,8 @@ class CTSD(lib.StreamObject):
         if c2 is None:
             c2 = self.ct_o2
 
-        e_hf = 2. * lib.einsum("ii -> ", c1[:self.c_nmo, :self.c_nmo])
-        e_hf += 2. * lib.einsum("ijij -> ", c2[:self.c_nmo, :self.c_nmo,
-                                             :self.c_nmo, :self.c_nmo])
-        e_hf -= lib.einsum("ijji -> ", c2[:self.c_nmo, :self.c_nmo,
-                                            :self.c_nmo, :self.c_nmo])
+        e_hf = 2. * lib.einsum("ij, ij-> ", c1, self.dm1)
+        e_hf += 0.5 * lib.einsum("ijkl, ijkl -> ", c2, self.dm2)
         e_hf += c0
         e_hf += self.mf.energy_nuc()
         return e_hf

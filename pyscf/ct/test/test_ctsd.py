@@ -4,22 +4,23 @@ import numpy as np
 from pyscf import gto, scf, lib
 from pyscf import ct, mp, ao2mo
 from pyscf.ct import ctsd
-from pyscf import cc, fci
+from pyscf.ct.ct_helper import fill_dms
+from pyscf import cc, fci, scf, mcscf, ao2mo
 from pyscf.cc import ccsd
 
-import os
+#import os
 #os.environ["MKL_NUM_THREADS"] = "1" 
 #os.environ["NUMEXPR_NUM_THREADS"] = "1" 
 #os.environ["OMP_NUM_THREADS"] = "1" 
 
 def setUpModule():
-    global mol, mf, myct
+    global mol, mf, mc, myct, cas
     mol = gto.Mole()
     mol.verbose = 7
     #mol.output = '/dev/null'
     mol.atom = '''
         N  0.  0 0;
-        N  0.  0 3.0;
+        N  0.  0 0.8;
         '''
     #mol.atom = '''
     #    F  0.  0 0;
@@ -41,7 +42,15 @@ def setUpModule():
     mf = scf.RHF(mol)
     #mf.chkfile = tempfile.NamedTemporaryFile().name
     mf.conv_tol_grad = 1e-8
+    mf.level_shift = 0.2
     mf.kernel()
+    mf = scf.newton(mf)
+    mf.kernel()
+    cas = (6, 6)
+    mc = mcscf.CASCI(mf, *cas)
+    mc.fix_spin_(shift=0.3, ss=0)
+    mc.kernel()
+    mf.mo_coeff = mc.mo_coeff.copy()
     #cisolver = fci.FCI(mf)
     #print('E(FCI) = %.12f' % cisolver.kernel()[0])
     #mycc = cc.CCSD(mf)
@@ -49,13 +58,13 @@ def setUpModule():
     #print('E(CCSD) = %.12f' % mycc.e_tot)
     # active space is set to 0. The reference energy of the
     # CT Ham should reproduce MP2 energy
-    myct = ctsd.CTSD(mf, a_nmo=4)
+    myct = ctsd.CTSD(mf, a_nmo=0)
 
 
 def tearDownModule():
-    global mol, mf, myct
+    global mol, mf, mc, myct, cas
     #mol.stdout.close()
-    del mol, mf, myct
+    del mol, mf, mc, myct, cas
 
 
 class KnownValues(unittest.TestCase):
@@ -673,6 +682,36 @@ class KnownValues(unittest.TestCase):
             myct.dm1 = dm1
             myct.dm2 = dm2
             e_ct = myct.solve(method='newton_krylov', max_cycle=1000, gs_only=True, dm1=dm1, dm2=dm2)
+    
+    def test_solve_mr_ref(self):
+        print("Test for MR-CTSD...")
+        cas_dm1, cas_dm2 = mc.fcisolver.make_rdm12(mc.ci, mc.ncas, mc.nelecas, reorder=True)
+        cas_dm2 = cas_dm2.transpose((0,2,1,3)).copy()
+        dm1, dm2 = fill_dms(cas_dm1, cas_dm2, mf, cas) 
+        # test if the dm1 and dm2 are correct
+        h_core = myct.ao2mo(mf.get_hcore(), mf.mo_coeff)
+        eri = myct.ao2mo(to_phy=True)
+        # see if the mean-field energy is correct with mf dms.
+
+        mf_dm1 = np.diag(mf.mo_occ)
+        mf_dm2 = (np.einsum('ij, kl -> ikjl', mf_dm1, mf_dm1) - np.einsum(
+            'il, kj -> ikjl', mf_dm1, mf_dm1) / 2.)
+        mf_e = np.einsum("ij, ji", h_core, mf_dm1)
+        mf_e += 0.5 * np.einsum("ijkl, ijkl", eri, mf_dm2)
+        mf_e += mf.energy_nuc()
+        assert np.isclose(mf_e, mf.e_tot, atol=1e-8)
+        
+        e_casscf = np.einsum("ij, ji ->", h_core, dm1)
+        e_casscf += 0.5 * np.einsum("ijkl, ijkl ->", eri, dm2)
+        e_casscf += mf.energy_nuc()
+        #e_casscf += energy_core
+        myct.dm1 = dm1
+        myct.dm2 = dm2
+
+        myct.solve(method="newton_krylov",dm1=dm1, dm2=dm2)
+
+
+
 
 if __name__ == "__main__":
     print("Full Tests for CT")
