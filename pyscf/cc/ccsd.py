@@ -484,7 +484,7 @@ def _contract_s4vvvv_t2(mycc, mol, vvvv, t2, out=None, verbose=None):
         vvvv : None or integral object
             if vvvv is None, contract t2 to AO-integrals using AO-direct algorithm
     '''
-    assert (t2.dtype == numpy.double)
+    #assert (t2.dtype == numpy.double)
     if t2.size == 0:
         return numpy.zeros_like(t2)
 
@@ -503,15 +503,26 @@ def _contract_s4vvvv_t2(mycc, mol, vvvv, t2, out=None, verbose=None):
         ic = i1 - i0
         jc = j1 - j0
         #:Ht2[:,j0:j1] += numpy.einsum('xef,efab->xab', x2[:,i0:i1], eri)
-        _dgemm('N', 'N', nocc2, jc*nvirb, ic*nvirb,
-               x2.reshape(-1,nvir2), eri.reshape(-1,jc*nvirb),
-               Ht2.reshape(-1,nvir2), 1, 1, i0*nvirb, 0, j0*nvirb)
+        if t2.dtype == numpy.double:
+            _dgemm('N', 'N', nocc2, jc*nvirb, ic*nvirb,
+                   x2.reshape(-1,nvir2), eri.reshape(-1,jc*nvirb),
+                   Ht2.reshape(-1,nvir2), 1, 1, i0*nvirb, 0, j0*nvirb)
+        elif t2.dtype == numpy.complex:
+            Ht2[:,j0:j1] += numpy.einsum('xef,efab->xab', x2[:,i0:i1], eri)
+        else:
+            raise NotImplementedError('t2.dtype %s not supported!' % t2.dtype)
+
 
         if i0 > j0:
             #:Ht2[:,i0:i1] += numpy.einsum('xef,abef->xab', x2[:,j0:j1], eri)
-            _dgemm('N', 'T', nocc2, ic*nvirb, jc*nvirb,
-                   x2.reshape(-1,nvir2), eri.reshape(-1,jc*nvirb),
-                   Ht2.reshape(-1,nvir2), 1, 1, j0*nvirb, 0, i0*nvirb)
+            if t2.dtype == numpy.double:
+                _dgemm('N', 'T', nocc2, ic*nvirb, jc*nvirb,
+                       x2.reshape(-1,nvir2), eri.reshape(-1,jc*nvirb),
+                       Ht2.reshape(-1,nvir2), 1, 1, j0*nvirb, 0, i0*nvirb)
+            elif t2.dtype == numpy.complex:
+                Ht2[:,j0:j1] += numpy.einsum('xef,efab->xab', x2[:,i0:i1], eri)
+            else:
+                raise NotImplementedError('t2.dtype %s not supported!' % t2.dtype)
 
     max_memory = max(MEMORYMIN, mycc.max_memory - lib.current_memory()[0])
     if vvvv is None:   # AO-direct CCSD
