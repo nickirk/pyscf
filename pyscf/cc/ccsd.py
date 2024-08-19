@@ -507,7 +507,7 @@ def _contract_s4vvvv_t2(mycc, mol, vvvv, t2, out=None, verbose=None):
             _dgemm('N', 'N', nocc2, jc*nvirb, ic*nvirb,
                    x2.reshape(-1,nvir2), eri.reshape(-1,jc*nvirb),
                    Ht2.reshape(-1,nvir2), 1, 1, i0*nvirb, 0, j0*nvirb)
-        elif t2.dtype == numpy.complex:
+        elif t2.dtype == complex:
             Ht2[:,j0:j1] += numpy.einsum('xef,efab->xab', x2[:,i0:i1], eri)
         else:
             raise NotImplementedError('t2.dtype %s not supported!' % t2.dtype)
@@ -519,8 +519,8 @@ def _contract_s4vvvv_t2(mycc, mol, vvvv, t2, out=None, verbose=None):
                 _dgemm('N', 'T', nocc2, ic*nvirb, jc*nvirb,
                        x2.reshape(-1,nvir2), eri.reshape(-1,jc*nvirb),
                        Ht2.reshape(-1,nvir2), 1, 1, j0*nvirb, 0, i0*nvirb)
-            elif t2.dtype == numpy.complex:
                 Ht2[:,i0:i1] += numpy.einsum('xef,abef->xab', x2[:,j0:j1], eri)
+                Ht2[:,j0:j1] += numpy.einsum('xef,efab->xab', x2[:,i0:i1], eri)
             else:
                 raise NotImplementedError('t2.dtype %s not supported!' % t2.dtype)
 
