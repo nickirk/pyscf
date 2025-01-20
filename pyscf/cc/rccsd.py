@@ -44,53 +44,67 @@ def update_amps(cc, t1, t2, eris):
     # Ref: Hirata et al., J. Chem. Phys. 120, 2581 (2004) Eqs.(35)-(36)
     assert (isinstance(eris, ccsd._ChemistsERIs))
     nocc, nvir = t1.shape
+
     fock = eris.fock
     mo_e_o = eris.mo_energy[:nocc]
     mo_e_v = eris.mo_energy[nocc:] + cc.level_shift
 
     fov = fock[:nocc,nocc:].copy()
+    fvo = fock[nocc:,:nocc].copy()
     foo = fock[:nocc,:nocc].copy()
     fvv = fock[nocc:,nocc:].copy()
 
     Foo = imd.cc_Foo(t1,t2,eris)
     Fvv = imd.cc_Fvv(t1,t2,eris)
     Fov = imd.cc_Fov(t1,t2,eris)
+    Fov_t2 = imd.cc_Fov_t2(t1,t2,eris)
 
     # Move energy terms to the other side
     Foo[np.diag_indices(nocc)] -= mo_e_o
     Fvv[np.diag_indices(nvir)] -= mo_e_v
-
     # T1 equation
-    t1new  =-2*np.einsum('kc,ka,ic->ia', fov, t1, t1)
-    t1new +=   np.einsum('ac,ic->ia', Fvv, t1)
-    t1new +=  -np.einsum('ki,ka->ia', Foo, t1)
-    t1new += 2*np.einsum('kc,kica->ia', Fov, t2)
-    t1new +=  -np.einsum('kc,ikca->ia', Fov, t2)
-    t1new +=   np.einsum('kc,ic,ka->ia', Fov, t1, t1)
-    t1new += fov.conj()
-    t1new += 2*np.einsum('kcai,kc->ia', eris.ovvo, t1)
-    t1new +=  -np.einsum('kiac,kc->ia', eris.oovv, t1)
+    t1new  =-2*np.einsum('kc,ka,ic->ia', fov, t1, t1) # correct
+    t1new +=   np.einsum('ac,ic->ia', Fvv, t1) 
+    t1new +=  -np.einsum('ki,ka->ia', Foo, t1) 
+    #t1new += 2*np.einsum('kc,kica->ia', Fov_t2, t2) # correct
+    #t1new +=  -np.einsum('kc,ikca->ia', Fov_t2, t2) # correct
+    t1new += 2*np.einsum('kc,kica->ia', Fov, t2) # correct
+    t1new +=  -np.einsum('kc,ikca->ia', Fov, t2) # correct
+    t1new +=   np.einsum('kc,ic,ka->ia', Fov, t1, t1) # correct
+    #t1new += fov.conj()
+    t1new += fvo.T
+    t1new += 2*np.einsum('kcai,kc->ia', eris.ovvo, t1) # correct
+    t1new +=  -np.einsum('kiac,kc->ia', eris.oovv, t1) # correct
+
+    
     eris_ovvv = np.asarray(eris.get_ovvv())
-    t1new += 2*lib.einsum('kdac,ikcd->ia', eris_ovvv, t2)
-    t1new +=  -lib.einsum('kcad,ikcd->ia', eris_ovvv, t2)
-    t1new += 2*lib.einsum('kdac,kd,ic->ia', eris_ovvv, t1, t1)
-    t1new +=  -lib.einsum('kcad,kd,ic->ia', eris_ovvv, t1, t1)
-    eris_ovoo = np.asarray(eris.ovoo, order='C')
-    t1new +=-2*lib.einsum('lcki,klac->ia', eris_ovoo, t2)
-    t1new +=   lib.einsum('kcli,klac->ia', eris_ovoo, t2)
-    t1new +=-2*lib.einsum('lcki,lc,ka->ia', eris_ovoo, t1, t1)
-    t1new +=   lib.einsum('kcli,lc,ka->ia', eris_ovoo, t1, t1)
+    t1new += 2*lib.einsum('kdac,ikcd->ia', eris_ovvv, t2) # correct
+    t1new +=  -lib.einsum('kcad,ikcd->ia', eris_ovvv, t2) # correct
+    t1new += 2*lib.einsum('kdac,kd,ic->ia', eris_ovvv, t1, t1) # correct
+    t1new +=  -lib.einsum('kcad,kd,ic->ia', eris_ovvv, t1, t1) # correct
+    eris_ovoo = np.asarray(eris.ovoo)
+
+    t1new +=-2*lib.einsum('lcki,klac->ia', eris_ovoo, t2) # correct
+    t1new +=   lib.einsum('kcli,klac->ia', eris_ovoo, t2) 
+    t1new +=-2*lib.einsum('lcki,lc,ka->ia', eris_ovoo, t1, t1) # correct
+    t1new +=   lib.einsum('kcli,lc,ka->ia', eris_ovoo, t1, t1) # correct
 
     # T2 equation
     tmp2  = lib.einsum('kibc,ka->abic', eris.oovv, -t1)
-    tmp2 += np.asarray(eris_ovvv).conj().transpose(1,3,0,2)
+    eris_vovv = np.asarray(eris.vovv)
+    tmp2 += np.asarray(eris_vovv).transpose(0,2,1,3)
+    #tmp2 += np.asarray(eris_ovvv).conj().transpose(1,3,0,2)
     tmp = lib.einsum('abic,jc->ijab', tmp2, t1)
     t2new = tmp + tmp.transpose(1,0,3,2)
+
     tmp2  = lib.einsum('kcai,jc->akij', eris.ovvo, t1)
-    tmp2 += eris_ovoo.transpose(1,3,0,2).conj()
+    eris_vooo = np.asarray(eris.vooo)
+    tmp2 += eris_vooo.transpose(0,2,1,3)
+    #tmp2 += eris_ovoo.transpose(1,3,0,2).conj()
     tmp = lib.einsum('akij,kb->ijab', tmp2, t1)
     t2new -= tmp + tmp.transpose(1,0,3,2)
-    t2new += np.asarray(eris.ovov).conj().transpose(0,2,1,3)
+    #t2new += np.asarray(eris.ovov).conj().transpose(0,2,1,3)
+    t2new += np.asarray(eris.vovo).transpose(1,3,0,2)
     if cc.cc2:
         Woooo2 = np.asarray(eris.oooo).transpose(0,2,1,3).copy()
         Woooo2 += lib.einsum('lcki,jc->klij', eris_ovoo, t1)
@@ -140,6 +154,8 @@ def update_amps(cc, t1, t2, eris):
     t1new /= eia
     t2new /= eijab
 
+    #t1new[:] = 0.
+
     return t1new, t2new
 
 
@@ -152,6 +168,7 @@ def energy(cc, t1=None, t2=None, eris=None):
     nocc, nvir = t1.shape
     fock = eris.fock
     e = 2*np.einsum('ia,ia', fock[:nocc,nocc:], t1)
+    #e = 2*np.einsum('ai,ia', fock[nocc:,:nocc], t1)
     tau = np.einsum('ia,jb->ijab',t1,t1)
     tau += t2
     eris_ovov = np.asarray(eris.ovov)
@@ -186,6 +203,7 @@ class RCCSD(ccsd.CCSD):
 
         if eris is None:
             eris = self.ao2mo(self.mo_coeff)
+            
         return ccsd.CCSDBase.ccsd(self, t1, t2, eris)
 
     def ao2mo(self, mo_coeff=None):
@@ -315,6 +333,87 @@ def _make_eris_outcore(mycc, mo_coeff=None):
     log.timer('CCSD integral transformation', *cput0)
     return eris
 
+def _make_eris_from_file(filename, cc, mo_coeff=None, ao2mofn=None):
+    """Generate ERIs from a FCIDUMP file or HDF5 file.
+    
+    Args:
+        filename : str
+            Path to the input file (currently supports FCIDUMP text format)
+        cc : RCCSD object
+            CC calculator object
+        mo_coeff : ndarray
+            MO coefficients if needed for transformation
+        ao2mofn : callable
+            Function to transform AO to MO if needed (not used for FCIDUMP)
+
+    Returns:
+        _ChemistsERIs : ERIs in chemist's notation
+    """
+    from pyscf import tools
+    
+    log = logger.Logger(cc.stdout, cc.verbose)
+    eris = _ChemistsERIs()
+    
+    # Check if file is text (FCIDUMP) or HDF5
+    is_text_file = False
+    try:
+        with open(filename, 'r') as f:
+            is_text_file = True
+    except UnicodeDecodeError:
+        raise NotImplementedError("HDF5 format support not implemented yet")
+    
+    if is_text_file:
+        # Read FCIDUMP file
+        h1e, h2e, ecore, norb, nelec, ms2, orbsym = tools.fcidump.read_tc(filename)
+        
+        # Verify consistency with CC object
+        #assert norb == cc.nmo, f"Orbital count mismatch: FCIDUMP={norb}, CC={cc.nmo}"
+        if isinstance(nelec, (int, np.integer)):
+            assert nelec == cc.mol.nelectron, f"Electron count mismatch: FCIDUMP={nelec}, CC={cc.mol.nelectron}"
+        else:  # tuple of (alpha, beta)
+            assert sum(nelec) == cc.mol.nelectron, f"Electron count mismatch: FCIDUMP={sum(nelec)}, CC={cc.mol.nelectron}"
+        cc.nmo = norb
+
+        nocc = cc.nocc
+        nmo = cc.nmo
+        nvir = nmo - nocc
+        
+        #h2e = h2e.transpose(1,0,3,2)
+        # Initialize Fock matrix elements from h1e
+        # Note: FCIDUMP h1e should already be in MO basis
+        eris.fock = h1e.copy()
+        # Convert h2e from chemist's to physicist's notation
+        eris.e_core = ecore
+        # Build Fock matrix
+        eris.fock += 2 * np.einsum('pqii->pq', h2e[:,:,:nocc,:nocc])
+        eris.fock -= np.einsum('piiq->pq', h2e[:,:nocc,:nocc,:])
+
+
+        eris.mo_energy = np.diag(eris.fock).copy()
+        
+        # Slice the full ERI tensor into required blocks
+        eris.oooo = h2e[:nocc,:nocc,:nocc,:nocc].copy()
+        eris.ovoo = h2e[:nocc,nocc:,:nocc,:nocc].copy()
+        eris.ooov = h2e[:nocc,:nocc,:nocc,nocc:].copy()
+        eris.vooo = h2e[nocc:,:nocc,:nocc,:nocc].copy()
+        eris.ovov = h2e[:nocc,nocc:,:nocc,nocc:].copy()
+        eris.vovo = h2e[nocc:,:nocc,nocc:,:nocc].copy()
+        eris.ovvo = h2e[:nocc,nocc:,nocc:,:nocc].copy()
+        eris.voov = h2e[nocc:,:nocc,:nocc,nocc:].copy()
+        eris.oovv = h2e[:nocc,:nocc,nocc:,nocc:].copy()
+        eris.ovvv = h2e[:nocc,nocc:,nocc:,nocc:].copy()
+        eris.vovv = h2e[nocc:,:nocc,nocc:,nocc:].copy()
+        eris.vvov = h2e[nocc:,nocc:,:nocc,nocc:].copy()
+        eris.vvvv = h2e[nocc:,nocc:,nocc:,nocc:].copy()
+        
+        
+        log.info('ERI tensors loaded from FCIDUMP file: %s', filename)
+        log.info('Number of orbitals: %d', norb)
+        log.info('Number of electrons: %s', str(nelec))
+        if orbsym is not None:
+            log.info('Orbital symmetries: %s', ' '.join([str(x) for x in orbsym]))
+        
+    return eris
 
 if __name__ == '__main__':
     from pyscf import scf
