@@ -57,7 +57,6 @@ def update_amps(cc, t1, t2, eris):
     Foo = imd.cc_Foo(t1,t2,eris)
     Fvv = imd.cc_Fvv(t1,t2,eris)
     Fov = imd.cc_Fov(t1,t2,eris)
-    Fov_t2 = imd.cc_Fov_t2(t1,t2,eris)
 
     # Move energy terms to the other side
     Foo[np.diag_indices(nocc)] -= mo_e_o
