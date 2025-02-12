@@ -46,8 +46,9 @@ def density_fit(mf, auxbasis=None, mesh=None, with_df=None):
         with_df : DF object
     '''
     from pyscf.pbc.df import df
+    from pyscf.pbc.scf.khf import KSCF
     if with_df is None:
-        if getattr(mf, 'kpts', None) is not None:
+        if isinstance(mf, KSCF):
             kpts = mf.kpts
         else:
             kpts = numpy.reshape(mf.kpt, (1,3))
@@ -193,7 +194,8 @@ def get_j_kpts_kshift(mydf, dm_kpts, kshift, hermi=0, kpts=numpy.zeros((1,3)), k
 
     kpts_band, input_band = _format_kpts_band(kpts_band, kpts), kpts_band
     nband = len(kpts_band)
-    j_real = gamma_point(kpts_band) and not numpy.iscomplexobj(dms)
+    j_real = (gamma_point(kpts_band) and gamma_point(kpts[kshift]) and
+              not numpy.iscomplexobj(dms))
 
     kconserv = get_kconserv_ria(mydf.cell, kpts)[kshift]
 
@@ -1333,6 +1335,7 @@ def _sep_real_imag(a, ncolmax, order):
     aR[:,:ncol] = numpy.asarray(a.real, order=order)
     aI[:,:ncol] = numpy.asarray(a.imag, order=order)
     return aR, aI
+
 def _format_mo(mo_coeff, mo_occ, shape=None, order='F', precision=DM2MO_PREC):
     mos = [mo[:,mocc>precision]*mocc[mocc>precision]**0.5
            for mo,mocc in zip(mo_coeff,mo_occ)]
@@ -1346,6 +1349,7 @@ def _format_mo(mo_coeff, mo_occ, shape=None, order='F', precision=DM2MO_PREC):
         moRs = moRs.reshape(*shape)
         moIs = moIs.reshape(*shape)
     return moRs, moIs
+
 def _mo_from_dm(dms, method='eigh', shape=None, order='C', precision=DM2MO_PREC):
     import scipy.linalg
     nkpts = len(dms)

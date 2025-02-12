@@ -97,6 +97,7 @@ BASE = getattr(__config__, 'BASE', 0)
 NORMALIZE_GTO = getattr(__config__, 'NORMALIZE_GTO', True)
 DISABLE_EVAL = getattr(__config__, 'DISABLE_EVAL', False)
 ARGPARSE = getattr(__config__, 'ARGPARSE', False)
+DUMPINPUT = getattr(__config__, 'DUMPINPUT', True)
 
 def M(*args, **kwargs):
     r'''This is a shortcut to build up Mole object.
@@ -497,7 +498,7 @@ def _generate_basis_converter():
             _basis = load(raw_basis, _std_symbol_without_ghost(symb))
         elif (any(isinstance(x, str) for x in raw_basis)
               # The first element is the basis of internal format
-              or not isinstance(raw_basis[0][0], int)):
+              or not isinstance(raw_basis[0][0], (numpy.integer, int))):
             stdsymb = _std_symbol_without_ghost(symb)
             _basis = []
             for rawb in raw_basis:
@@ -1257,16 +1258,12 @@ def dumps(mol):
     exclude_keys = {'output', 'stdout', '_keys', '_ctx_lock',
                     # Constructing in function loads
                     'symm_orb', 'irrep_id', 'irrep_name'}
-    # FIXME: nparray and kpts for cell objects may need to be excluded
-    nparray_keys = {'_atm', '_bas', '_env', '_ecpbas',
-                    '_symm_orig', '_symm_axes'}
-
     moldic = dict(mol.__dict__)
     for k in exclude_keys:
         if k in moldic:
             del (moldic[k])
-    for k in nparray_keys:
-        if isinstance(moldic[k], numpy.ndarray):
+    for k in moldic:
+        if isinstance(moldic[k], (numpy.ndarray, numpy.generic)):
             moldic[k] = moldic[k].tolist()
     moldic['atom'] = repr(mol.atom)
     moldic['basis']= repr(mol.basis)
@@ -1288,6 +1285,8 @@ def dumps(mol):
                     dic1[k] = list(v)
                 elif isinstance(v, dict):
                     dic1[k] = skip_value(v)
+                elif isinstance(v, np.generic):
+                    dic1[k] = v.tolist()
                 else:
                     msg =('Function mol.dumps drops attribute %s because '
                           'it is not JSON-serializable' % k)
@@ -1377,9 +1376,9 @@ def npgto_nr(mol, cart=None):
         cart = mol.cart
     l = mol._bas[:,ANG_OF]
     if cart:
-        return ((l+1)*(l+2)//2 * mol._bas[:,NPRIM_OF]).sum()
+        return int(((l+1)*(l+2)//2 * mol._bas[:,NPRIM_OF]).sum())
     else:
-        return ((l*2+1) * mol._bas[:,NPRIM_OF]).sum()
+        return int(((l*2+1) * mol._bas[:,NPRIM_OF]).sum())
 def nao_nr(mol, cart=None):
     '''Total number of contracted GTOs for the given :class:`Mole` object'''
     if cart is None:
@@ -1387,11 +1386,11 @@ def nao_nr(mol, cart=None):
     if cart:
         return nao_cart(mol)
     else:
-        return ((mol._bas[:,ANG_OF]*2+1) * mol._bas[:,NCTR_OF]).sum()
+        return int(((mol._bas[:,ANG_OF]*2+1) * mol._bas[:,NCTR_OF]).sum())
 def nao_cart(mol):
     '''Total number of contracted cartesian GTOs for the given :class:`Mole` object'''
     l = mol._bas[:,ANG_OF]
-    return ((l+1)*(l+2)//2 * mol._bas[:,NCTR_OF]).sum()
+    return int(((l+1)*(l+2)//2 * mol._bas[:,NCTR_OF]).sum())
 
 # nao_id0:nao_id1 corresponding to bas_id0:bas_id1
 def nao_nr_range(mol, bas_id0, bas_id1):
@@ -1416,8 +1415,8 @@ def nao_nr_range(mol, bas_id0, bas_id1):
     (2, 6)
     '''
     ao_loc = moleintor.make_loc(mol._bas[:bas_id1], 'sph')
-    nao_id0 = ao_loc[bas_id0]
-    nao_id1 = ao_loc[-1]
+    nao_id0 = int(ao_loc[bas_id0])
+    nao_id1 = int(ao_loc[-1])
     return nao_id0, nao_id1
 
 def nao_2c(mol):
@@ -1427,7 +1426,7 @@ def nao_2c(mol):
     dims = (l*4+2) * mol._bas[:,NCTR_OF]
     dims[kappa<0] = (l[kappa<0] * 2 + 2) * mol._bas[kappa<0,NCTR_OF]
     dims[kappa>0] = (l[kappa>0] * 2) * mol._bas[kappa>0,NCTR_OF]
-    return dims.sum()
+    return int(dims.sum())
 
 # nao_id0:nao_id1 corresponding to bas_id0:bas_id1
 def nao_2c_range(mol, bas_id0, bas_id1):
@@ -1452,8 +1451,8 @@ def nao_2c_range(mol, bas_id0, bas_id1):
     (4, 12)
     '''
     ao_loc = moleintor.make_loc(mol._bas[:bas_id1], '')
-    nao_id0 = ao_loc[bas_id0]
-    nao_id1 = ao_loc[-1]
+    nao_id0 = int(ao_loc[bas_id0])
+    nao_id1 = int(ao_loc[-1])
     return nao_id0, nao_id1
 
 def ao_loc_nr(mol, cart=None):
@@ -2101,7 +2100,7 @@ def tostring(mol, format='raw'):
             output.append('%-4s   %s' % (symb, line))
         return '\n'.join(output)
     else:
-        raise NotImplementedError
+        raise NotImplementedError(f'format={format}')
 
 def tofile(mol, filename, format=None):
     '''Write molecular geometry to a file of the required format.
@@ -2343,7 +2342,6 @@ class MoleBase(lib.StreamObject):
         self._env = numpy.zeros(PTR_ENV_START)
         self._ecpbas = numpy.zeros((0,8), dtype=numpy.int32)
 
-        self.stdout = sys.stdout
         self.groupname = 'C1'
         self.topgroup = 'C1'
         self.symm_orb = None
@@ -2462,7 +2460,7 @@ class MoleBase(lib.StreamObject):
     __getstate__ = dumps
     __setstate__ = loads_
 
-    def build(self, dump_input=True, parse_arg=ARGPARSE,
+    def build(self, dump_input=DUMPINPUT, parse_arg=ARGPARSE,
               verbose=None, output=None, max_memory=None,
               atom=None, basis=None, unit=None, nucmod=None, ecp=None, pseudo=None,
               charge=None, spin=0, symmetry=None, symmetry_subgroup=None,
@@ -2760,7 +2758,7 @@ class MoleBase(lib.StreamObject):
                           '          X                Y                Z       unit  Magmom\n')
         for ia,atom in enumerate(self._atom):
             coorda = tuple([x * param.BOHR for x in atom[1]])
-            coordb = tuple([x for x in atom[1]])
+            coordb = tuple(atom[1])
             magmom = self.magmom[ia]
             self.stdout.write('[INPUT]%3d %-4s %16.12f %16.12f %16.12f AA  '
                               '%16.12f %16.12f %16.12f Bohr  %4.1f\n'
@@ -3069,18 +3067,17 @@ class MoleBase(lib.StreamObject):
             mol._env[ptr+0] = unit * atoms_or_coords[:,0]
             mol._env[ptr+1] = unit * atoms_or_coords[:,1]
             mol._env[ptr+2] = unit * atoms_or_coords[:,2]
+            # reset nuclear energy
+            mol.enuc = None
         else:
             mol.symmetry = symmetry
             mol.build(False, False)
-
-        # reset nuclear energy
-        mol.enuc = None
 
         if mol.verbose >= logger.INFO:
             logger.info(mol, 'New geometry')
             for ia, atom in enumerate(mol._atom):
                 coorda = tuple([x * param.BOHR for x in atom[1]])
-                coordb = tuple([x for x in atom[1]])
+                coordb = tuple(atom[1])
                 coords = coorda + coordb
                 logger.info(mol, ' %3d %-4s %16.12f %16.12f %16.12f AA  '
                             '%16.12f %16.12f %16.12f Bohr\n',
@@ -3130,7 +3127,7 @@ class MoleBase(lib.StreamObject):
         Examples:
 
         >>> mol.build(atom='H^2 0 0 0; H 0 0 1.1')
-        >>> mol.atom_symbol(0)
+        >>> mol.atom_pure_symbol(0)
         H
         '''
         return _std_symbol(self._atom[atm_id][0])
@@ -3157,7 +3154,7 @@ class MoleBase(lib.StreamObject):
         '''
         if self._atm[atm_id,NUC_MOD_OF] != NUC_FRAC_CHARGE:
             # regular QM atoms
-            return self._atm[atm_id,CHARGE_OF]
+            return int(self._atm[atm_id,CHARGE_OF])
         else:
             # MM atoms with fractional charges
             return self._env[self._atm[atm_id,PTR_FRAC_CHARGE]]
@@ -3221,7 +3218,7 @@ class MoleBase(lib.StreamObject):
         >>> mol.atom_nshells(1)
         5
         '''
-        return (self._bas[:,ATOM_OF] == atm_id).sum()
+        return int((self._bas[:,ATOM_OF] == atm_id).sum())
 
     def atom_shell_ids(self, atm_id):
         r'''A list of the shell-ids of the given atom
@@ -3268,7 +3265,7 @@ class MoleBase(lib.StreamObject):
         >>> mol.bas_atom(7)
         1
         '''
-        return self._bas[bas_id,ATOM_OF].copy()
+        return int(self._bas[bas_id,ATOM_OF])
 
     def bas_angular(self, bas_id):
         r'''The angular momentum associated with the given basis
@@ -3280,10 +3277,10 @@ class MoleBase(lib.StreamObject):
         Examples:
 
         >>> mol.build(atom='H 0 0 0; Cl 0 0 1.1', basis='cc-pvdz')
-        >>> mol.bas_atom(7)
+        >>> mol.bas_angular(7)
         2
         '''
-        return self._bas[bas_id,ANG_OF].copy()
+        return int(self._bas[bas_id,ANG_OF])
 
     def bas_nctr(self, bas_id):
         r'''The number of contracted GTOs for the given shell
@@ -3295,10 +3292,10 @@ class MoleBase(lib.StreamObject):
         Examples:
 
         >>> mol.build(atom='H 0 0 0; Cl 0 0 1.1', basis='cc-pvdz')
-        >>> mol.bas_atom(3)
+        >>> mol.bas_nctr(3)
         3
         '''
-        return self._bas[bas_id,NCTR_OF].copy()
+        return int(self._bas[bas_id,NCTR_OF])
 
     def bas_nprim(self, bas_id):
         r'''The number of primitive GTOs for the given shell
@@ -3310,10 +3307,10 @@ class MoleBase(lib.StreamObject):
         Examples:
 
         >>> mol.build(atom='H 0 0 0; Cl 0 0 1.1', basis='cc-pvdz')
-        >>> mol.bas_atom(3)
+        >>> mol.bas_nprim(3)
         11
         '''
-        return self._bas[bas_id,NPRIM_OF].copy()
+        return int(self._bas[bas_id,NPRIM_OF])
 
     def bas_kappa(self, bas_id):
         r'''Kappa (if l < j, -l-1, else l) of the given shell
@@ -3328,7 +3325,7 @@ class MoleBase(lib.StreamObject):
         >>> mol.bas_kappa(3)
         0
         '''
-        return self._bas[bas_id,KAPPA_OF].copy()
+        return int(self._bas[bas_id,KAPPA_OF])
 
     def bas_exp(self, bas_id):
         r'''exponents (ndarray) of the given shell
@@ -3340,7 +3337,7 @@ class MoleBase(lib.StreamObject):
         Examples:
 
         >>> mol.build(atom='H 0 0 0; Cl 0 0 1.1', basis='cc-pvdz')
-        >>> mol.bas_kappa(0)
+        >>> mol.bas_exp(0)
         [ 13.01     1.962    0.4446]
         '''
         nprim = self.bas_nprim(bas_id)
@@ -3441,6 +3438,11 @@ class MoleBase(lib.StreamObject):
                 | 1 : hermitian
                 | 2 : anti-hermitian
 
+            shls_slice : 4-element, 6-element or 8-element tuple
+                Label the start-stop shells for each index in the integral.
+                For example, the 8-element tuple for the 2-electron integral
+                tensor (ij|kl) = intor('int2e') are specified as
+                (ish_start, ish_end, jsh_start, jsh_end, ksh_start, ksh_end, lsh_start, lsh_end)
             grids : ndarray
                 Coordinates of grids for the int1e_grids integrals
 
