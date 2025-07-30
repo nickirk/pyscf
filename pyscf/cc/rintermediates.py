@@ -28,9 +28,8 @@ from pyscf import ao2mo
 ### Eqs. (37)-(39) "kappa"
 
 def cc_Foo(t1, t2, eris):
-    # This is correct, as ccd is correct.
     nocc, nvir = t1.shape
-    foo = eris.fock[:nocc,:nocc].copy()
+    foo = eris.fock[:nocc,:nocc]
     eris_ovov = np.asarray(eris.ovov)
     Fki  = 2*lib.einsum('kcld,ilcd->ki', eris_ovov, t2)
     Fki -=   lib.einsum('kdlc,ilcd->ki', eris_ovov, t2)
@@ -40,9 +39,8 @@ def cc_Foo(t1, t2, eris):
     return Fki
 
 def cc_Fvv(t1, t2, eris):
-    # This is correct, as ccd is correct.
     nocc, nvir = t1.shape
-    fvv = eris.fock[nocc:,nocc:].copy()
+    fvv = eris.fock[nocc:,nocc:]
     eris_ovov = np.asarray(eris.ovov)
     Fac  =-2*lib.einsum('kcld,klad->ac', eris_ovov, t2)
     Fac +=   lib.einsum('kdlc,klad->ac', eris_ovov, t2)
@@ -51,38 +49,33 @@ def cc_Fvv(t1, t2, eris):
     Fac += fvv
     return Fac
 
-
 def cc_Fov(t1, t2, eris):
-    # This is correct, as ccd is correct.
     nocc, nvir = t1.shape
-    fov = eris.fock[:nocc,nocc:].copy()
+    fov = eris.fock[:nocc,nocc:]
     eris_ovov = np.asarray(eris.ovov)
     Fkc  = 2*np.einsum('kcld,ld->kc', eris_ovov, t1)
     Fkc -=   np.einsum('kdlc,ld->kc', eris_ovov, t1)
     Fkc += fov
     return Fkc
 
-
-
 ### Eqs. (40)-(41) "lambda"
 
 def Loo(t1, t2, eris):
     nocc, nvir = t1.shape
-    fov = eris.fock[:nocc,nocc:].copy()  # f^k_c
-    Lki = cc_Foo(t1, t2, eris) + np.einsum('kc,ic->ki',fov, t1)  # κ^k_i + Σ_c f^k_c t^c_i
+    fov = eris.fock[:nocc,nocc:]
+    Lki = cc_Foo(t1, t2, eris) + np.einsum('kc,ic->ki',fov, t1)
     eris_ovoo = np.asarray(eris.ovoo)
-    Lki += 2*np.einsum('lcki,lc->ki', eris_ovoo, t1)  # 2v^{lk}_{ci} = 2v^{kl}_{ic}
-    Lki -=   np.einsum('kcli,lc->ki', eris_ovoo, t1)  # -v^{kl}_{ic} = -v^{kl}_{ci}
+    Lki += 2*np.einsum('lcki,lc->ki', eris_ovoo, t1)
+    Lki -=   np.einsum('kcli,lc->ki', eris_ovoo, t1)
     return Lki
 
 def Lvv(t1, t2, eris):
     nocc, nvir = t1.shape
-    fov = eris.fock[:nocc,nocc:].copy()  # f^k_c
-    Lac = cc_Fvv(t1, t2, eris) - np.einsum('kc,ka->ac',fov, t1)  # κ^a_c - Σ_k f^k_c t^a_k
-    eris_ovvv = np.asarray(eris.get_ovvv())  # v^{kd}_{ac} read as 'kadc'
-    # Σ_{k,d} w^{ak}_{cd} t^d_k = Σ_{k,d} (2v^{ak}_{cd} - v^{ak}_{dc}) t^d_k
-    Lac += 2*np.einsum('kdac,kd->ac', eris_ovvv, t1)  # 2v^{kd}_{ac} = 2v^{ak}_{cd}
-    Lac -=   np.einsum('kcad,kd->ac', eris_ovvv, t1)  # -v^{kc}_{ad} = -v^{ak}_{dc}
+    fov = eris.fock[:nocc,nocc:]
+    Lac = cc_Fvv(t1, t2, eris) - np.einsum('kc,ka->ac',fov, t1)
+    eris_ovvv = np.asarray(eris.get_ovvv())
+    Lac += 2*np.einsum('kdac,kd->ac', eris_ovvv, t1)
+    Lac -=   np.einsum('kcad,kd->ac', eris_ovvv, t1)
     return Lac
 
 ### Eqs. (42)-(45) "chi"
@@ -209,7 +202,13 @@ def Wvvvo(t1, t2, eris, _Wvvvv=None):
     Wabcj +=   lib.einsum('kclj,lkba->abcj', eris_ovoo, t2)
     Wabcj +=   lib.einsum('kclj,lb,ka->abcj', eris_ovoo, t1, t1)
     Wabcj +=  -lib.einsum('kc,kjab->abcj', cc_Fov(t1, t2, eris), t2)
-    Wabcj += np.asarray(eris_ovvv).transpose(3,1,2,0).conj()
+
+    if hasattr(eris, 'vvvo') and eris.vvvo is not None:
+        # Use precomputed vvvo block for non-hermitian integrals
+        Wabcj += np.asarray(eris.vvvo)
+    else:
+        # Fall back to conjugate transpose for hermitian integrals (memory efficient)
+        Wabcj += np.asarray(eris_ovvv).transpose(3,1,2,0).conj()
     if np.any(t1):
         if _Wvvvv is None:
             _Wvvvv = Wvvvv(t1, t2, eris)
@@ -229,7 +228,10 @@ def Wovoo(t1, t2, eris):
     Wkbij +=   lib.einsum('kcbd,jd,ic->kbij', eris_ovvv, t1, t1)
     Wkbij +=  -lib.einsum('kclj,libc->kbij', eris_ovoo, t2)
     Wkbij +=   lib.einsum('kc,ijcb->kbij', cc_Fov(t1, t2, eris), t2)
-    Wkbij += np.asarray(eris_ovoo).transpose(3,1,2,0).conj()
+    if hasattr(eris, 'ooov') and eris.ooov is not None:
+        Wkbij += np.asarray(eris.ooov)
+    else:
+        Wkbij += np.asarray(eris_ovoo).transpose(3,1,2,0).conj()
     return Wkbij
 
 def _get_vvvv(eris):

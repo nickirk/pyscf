@@ -1407,6 +1407,15 @@ class _ChemistsERIs:
         self.ovvv = None
         self.vvvv = None
 
+        # blocks needed for non-hermitian Hamiltonian in ccsd related methods
+        self.vvvo = None
+        self.ooov = None
+
+        # blocks needed for non-hermitian Hamiltonian in t3t2 related methods
+        self.vvov = None
+        self.vooo = None
+        
+
     def _common_init_(self, mycc, mo_coeff=None):
         if mo_coeff is None:
             mo_coeff = mycc.mo_coeff
