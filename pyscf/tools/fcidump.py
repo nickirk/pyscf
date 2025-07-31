@@ -258,16 +258,16 @@ def read(filename, molpro_orbsym=MOLPRO_ORBSYM, verbose=True):
     finp = open(filename, 'r')
 
     data = []
-    for i in range(10):
+    while True:
         line = finp.readline().upper()
+        if not line:
+            raise RuntimeError('Problematic FCIDUMP header: &END not found')
         data.append(line)
-        if '&END' in line:
+        if '&END' in line or '/' in line:
             break
-    else:
-        raise RuntimeError('Problematic FCIDUMP header')
 
     result = {}
-    tokens = ','.join(data).replace('&FCI', '').replace('&END', '')
+    tokens = ','.join(data).replace('&FCI', '').replace('&END', '').replace('/', '')
     tokens = tokens.replace(' ', '').replace('\n', '').replace(',,', ',')
     for token in re.split(',(?=[a-zA-Z])', tokens):
         key, val = token.split('=')
@@ -380,6 +380,139 @@ def scf_from_fcidump(mf, filename, molpro_orbsym=MOLPRO_ORBSYM):
     return to_scf(filename, molpro_orbsym, mf)
 
 scf.hf.SCF.from_fcidump = scf_from_fcidump
+
+def read_tc(filename):
+    '''Parse FCIDUMP configuration file in TC format.
+    This format has a header like:
+    &FCI
+     NORB=25,
+     NELEC=10,
+     MS2=0,
+     ISYM=1,
+     ORBSYM=1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+     ST=1,
+     III=0,
+     OCC=5,
+     CLOSED=5,
+     IUHF=0,
+     NPY1=int1.npy,
+     NPY2=int2.npy,
+     ENUC=    59.022315384270307     ,
+     /
+
+    Args:
+        filename : a FCIDUMP file/ or just the header part
+
+    Returns:
+        h1e : (nmo,nmo) array
+        h2e : (nmo,nmo,nmo,nmo) array
+        ecore : float
+        norb : int
+        nelec : int
+        ms2 : int
+        orbsym : list
+    '''
+    with open(filename, 'r') as f:
+        data = []
+        while True:
+            line = f.readline()
+            if not line:
+                raise RuntimeError('Incomplete FCIDUMP header')
+            data.append(line.strip())
+            if line.strip().endswith('/') or line.strip().endswith('&END'):
+                break
+        
+        # Join all header lines and remove &FCI and /
+        header = ' '.join(data).replace('&FCI', '').replace('/', '')
+        
+        # Split by comma and clean up
+        tokens = [x.strip() for x in header.split(',') if x.strip()]
+        
+        # Parse key-value pairs
+        params = {}
+        for token in tokens:
+            if '=' not in token:
+                continue
+            key, val = token.split('=', 1)
+            key = key.strip().upper()
+            val = val.strip()
+            
+            if key in ('NORB', 'NELEC', 'MS2', 'ISYM', 'ST', 'III', 'OCC', 'CLOSED'):
+                params[key] = int(val)
+            elif key == 'ORBSYM':
+                # Handle ORBSYM specially as it can have multiple values
+                orbsym_vals = [x.strip() for x in val.split(',') if x.strip()]
+                params[key] = [int(x) for x in orbsym_vals]
+            elif key == 'ENUC':
+                params[key] = float(val)
+            else:
+                params[key] = val.strip('"\'')  # Remove any quotes from string values
+
+        # Get required parameters with defaults
+        norb = params.get('NORB')
+        if norb is None:
+            raise ValueError('NORB not found in FCIDUMP header')
+        nelec = params.get('NELEC', 0)
+        ms2 = params.get('MS2', 0)
+        orbsym = params.get('ORBSYM', [1] * norb)
+        ecore = params.get('ENUC', 0.0)
+
+        # Check if NPY files are specified
+        if 'NPY1' in params and 'NPY2' in params:
+            # Read from NPY files
+            import os
+            dirname = os.path.dirname(filename)
+            h1e = numpy.load(os.path.join(dirname, params['NPY1']))
+            int_2elec = numpy.load(os.path.join(dirname, params['NPY2']))
+            
+            # Check if NPY2 is in triangular storage format
+            if len(int_2elec.shape) == 3:  # Triangular storage
+                norb = len(int_2elec)
+                h2e = numpy.zeros((norb, norb, norb, norb))
+                
+                # Create indices for the lower triangular part
+                l_idx, k_idx = numpy.tril_indices(norb, -1)
+                # Create all combinations of i,j with k,l indices
+                i_idx = numpy.arange(norb)[:,None,None]
+                j_idx = numpy.arange(norb)[None,:,None]
+                
+                # Assign values for k < l
+                kl_idx = numpy.arange(len(k_idx))
+                h2e[i_idx, k_idx, j_idx, l_idx] = int_2elec[:,:,kl_idx]
+                h2e[j_idx, l_idx, i_idx, k_idx] = int_2elec[:,:,kl_idx]  # (ik,jl) permutation symmetry
+                
+                # Assign values for k == l
+                l_diag = numpy.arange(norb)
+                kl_diag = kl_idx[-1] + 1 + numpy.arange(norb)
+                h2e[i_idx, l_diag, j_idx, l_diag] = int_2elec[:,:,kl_diag]
+            else:  # Full storage
+                h2e = int_2elec
+            
+            return h1e, h2e, ecore, norb, nelec, ms2, orbsym
+
+        # If no NPY files, read integrals from the FCIDUMP file
+        h1e = numpy.zeros((norb, norb))
+        h2e = numpy.zeros((norb, norb, norb, norb))
+        
+        while True:
+            line = f.readline()
+            if not line:
+                break
+            if len(line.split()) == 0:
+                continue
+            a, i, j, k, l = line.split()
+            i, j, k, l = [int(x) - 1 for x in [i, j, k, l]]
+        
+            if i + j + k + l == -4:
+                ecore = float(a)
+            elif k + l == -2:
+                h1e[i, j] = float(a)
+                h1e[j, i] = float(a)
+            else:
+                h2e[i, j, k, l] = float(a)
+                h2e[k, l, i, j] = float(a)
+
+    return h1e, h2e, ecore, norb, nelec, ms2, orbsym
 
 if __name__ == '__main__':
     import argparse
