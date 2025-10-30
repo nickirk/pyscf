@@ -203,9 +203,9 @@ def Wvvvo(t1, t2, eris, _Wvvvv=None):
     Wabcj +=   lib.einsum('kclj,lb,ka->abcj', eris_ovoo, t1, t1)
     Wabcj +=  -lib.einsum('kc,kjab->abcj', cc_Fov(t1, t2, eris), t2)
 
-    if hasattr(eris, 'vvvo') and eris.vvvo is not None:
-        # Use precomputed vvvo block for non-hermitian integrals
-        Wabcj += np.asarray(eris.vvvo).transpose(0,2,1,3)
+    if hasattr(eris, 'vovv') and eris.vovv is not None:
+        # Use precomputed vovv block for non-hermitian integrals
+        Wabcj += np.asarray(eris.vovv).transpose(2,0,3,1)
     else:
         # Fall back to conjugate transpose for hermitian integrals (memory efficient)
         Wabcj += np.asarray(eris_ovvv).transpose(3,1,2,0).conj()
@@ -228,8 +228,8 @@ def Wovoo(t1, t2, eris):
     Wkbij +=   lib.einsum('kcbd,jd,ic->kbij', eris_ovvv, t1, t1)
     Wkbij +=  -lib.einsum('kclj,libc->kbij', eris_ovoo, t2)
     Wkbij +=   lib.einsum('kc,ijcb->kbij', cc_Fov(t1, t2, eris), t2)
-    if hasattr(eris, 'oovo') and eris.oovo is not None:
-        Wkbij += np.asarray(eris.oovo).transpose(0,2,1,3)
+    if hasattr(eris, 'vooo') and eris.vooo is not None:
+        Wkbij += np.asarray(eris.vooo).transpose(2,0,3,1)
     else:
         Wkbij += np.asarray(eris_ovoo).transpose(3,1,2,0).conj()
     return Wkbij
