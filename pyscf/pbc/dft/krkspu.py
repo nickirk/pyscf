@@ -62,26 +62,30 @@ def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
     # J + V_xc
     vxc = krks.get_veff(ks, cell, dm, dm_last=dm_last, vhf_last=vhf_last,
                         hermi=hermi, kpts=kpts, kpts_band=kpts_band)
-    vxc = _add_Vhubbard(vxc, ks, dm, kpts)
+    vxc = _add_Vhubbard(vxc, ks, dm, kpts, kpts_band=kpts_band)
     return vxc
 
-def _add_Vhubbard(vxc, ks, dm, kpts):
+def _add_Vhubbard(vxc, ks, dm, kpts, kpts_band=None):
     '''Add Hubbard U to Vxc matrix inplace.
     '''
+    
     cell = ks.cell
     pcell = reference_mol(cell, ks.minao_ref)
 
-    is_ibz = hasattr(kpts, "kpts_ibz")
-    kpts_input = kpts
+    # Use kpts_band if provided, otherwise use kpts
+    kpts_used = kpts_band if kpts_band is not None else kpts
+    
+    is_ibz = hasattr(kpts_used, "kpts_ibz")
+    kpts_input = kpts_used
     if is_ibz:
-        kpts = kpts.kpts_ibz
-    kpts = kpts.reshape(-1, 3)
-    nkpts = len(kpts)
+        kpts_used = kpts_used.kpts_ibz
+    kpts_used = kpts_used.reshape(-1, 3)
+    nkpts = len(kpts_used)
 
-    ovlp = cell.pbc_intor('int1e_ovlp', hermi=1, kpts=kpts)
+    ovlp = cell.pbc_intor('int1e_ovlp', hermi=1, kpts=kpts_used)
     U_idx, U_val, U_lab = _set_U(cell, pcell, ks.U_idx, ks.U_val)
     if ks.C_ao_lo is None:
-        C_ao_lo = _make_minao_lo(cell, pcell, kpts)
+        C_ao_lo = _make_minao_lo(cell, pcell, kpts_used)
     else:
         C_ao_lo = ks.C_ao_lo
 

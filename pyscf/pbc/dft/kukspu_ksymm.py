@@ -37,7 +37,7 @@ def get_veff(ks, cell=None, dm=None, dm_last=0, vhf_last=0, hermi=1,
     # J + V_xc
     vxc = kuks_ksymm.get_veff(ks, cell, dm, dm_last=dm_last, vhf_last=vhf_last,
                               hermi=hermi, kpts=kpts, kpts_band=kpts_band)
-    return kukspu._add_Vhubbard(vxc, ks, dm, kpts)
+    return kukspu._add_Vhubbard(vxc, ks, dm, kpts, kpts_band=kpts_band)
 
 @lib.with_doc(kukspu.KUKSpU.__doc__)
 class KsymAdaptedKUKSpU(kuks_ksymm.KUKS):
