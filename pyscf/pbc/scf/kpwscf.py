@@ -244,28 +244,52 @@ class KPWSCF(lib.StreamObject):
             self._kin_diag[ik] = 0.5 * np.einsum('ij,ij->i', Gk, Gk)
 
     def _build_vne(self):
-        """Build nuclear-electron potential V_ne in real space."""
+        """Build nuclear-electron potential V_ne in real space.
+        
+        This includes:
+        1. Bare nucleus potential (Coulomb)
+        2. Local pseudopotential term (if pseudopotential is specified in cell)
+        
+        Non-local pseudopotential terms are handled separately in _apply_pp_nonlocal().
+        """
+        from pyscf.pbc.gto.pseudo import pp as pseudo_module
+        
         log = logger.new_logger(self, self.verbose)
         mesh = self.mesh
         cell = self.cell
         
+        # Get G-vectors
+        Gv = self.cell.get_Gv(mesh=mesh)  # Use the KPWSCF mesh, not cell.mesh!
+        
         # Get structure factors and atomic charges
         SI = cell.get_SI(mesh=mesh)  # (natm, ngrids) complex
         charge = cell.atom_charges()  # Nuclear charges (positive)
-        rhoG = charge @ SI  # (ngrids,) nuclear charge density in G-space
         
-        # Get Coulomb kernel and compute V_ne in G-space
-        # V_ne(G) = -4π*Z(G)/|G|^2 (negative for attractive potential)
-        Gv = self.cell.get_Gv(mesh=mesh)  # Use the KPWSCF mesh, not cell.mesh!
-        coulG = pbctools.get_coulG(cell, mesh=mesh, Gv=Gv)
-        self._coulG0 = coulG  # Cache for later use
-        vneG = -rhoG * coulG  # (ngrids,) negative sign for attractive potential
+        # Check if pseudopotential is specified
+        has_pseudo = hasattr(cell, '_pseudo') and cell._pseudo
+        
+        if has_pseudo:
+            # With pseudopotential: use local PP which replaces bare Coulomb
+            log.debug1('Using local pseudopotential (replaces bare Coulomb)')
+            vpplocG = pseudo_module.get_vlocG(cell, Gv)  # (natm, ngrids)
+            vneG = -np.einsum('ij,ij->j', SI, vpplocG)  # Contract with structure factors
+            log.debug2('Local PP V_loc(G): min/max %.6g / %.6g', 
+                      vneG.min(), vneG.max())
+        else:
+            # Without pseudopotential: use bare Coulomb potential
+            rhoG = charge @ SI  # (ngrids,) nuclear charge density in G-space
+            # Get Coulomb kernel and compute V_ne in G-space
+            # V_ne(G) = -4π*Z(G)/|G|^2 (negative for attractive potential)
+            vneG = -rhoG * pbctools.get_coulG(cell, mesh=mesh, Gv=Gv)  # negative sign for attractive potential
+        
+        # Cache Coulomb kernel for use in Hartree energy calculation
+        self._coulG0 = pbctools.get_coulG(cell, mesh=mesh, Gv=Gv)
         
         # Transform to real space
         # pbctools.ifft uses 1/N normalization, but we need 1/Ω for potentials
         # V(r) = (1/Ω) Σ_G V(G) e^(iG·r) = (N/Ω) × IFFT[V(G)]
         self._vne_R = pbctools.ifft(vneG, mesh).real * (self.ngrids / self.vol)
-        log.debug1('Built V_ne on grid; min/max %.6g / %.6g', 
+        log.debug1('Built V_ne+Vloc on grid; min/max %.6g / %.6g', 
                    self._vne_R.min(), self._vne_R.max())
         return self._vne_R
 
@@ -580,6 +604,155 @@ class KPWSCF(lib.StreamObject):
         rho_r = self.get_density_r()
         return self._fft_r2g(rho_r)
 
+    def _apply_nuc(self, ik, psi_nk_g):
+        """Apply nuclear (and pseudopotential) potential to a wavefunction.
+        
+        This function applies both:
+        1. Local potential: V_ne(r) - includes bare nucleus and local pseudopotential
+        2. Non-local potential: projector-based term from pseudopotential (if present)
+        
+        Formula:
+        V_nuc|ψ_n⟩ = V_loc(r)|ψ_n⟩ + Σ_{ia,lm,n'} <p_{ia,l,n'}|ψ_n⟩ h_{l,n'n''} |p_{ia,l,n''}⟩
+        
+        where:
+        - V_loc includes the local PP term (added to self._vne_R during build())
+        - p_{ia,l,n'} are projector functions (if pseudopotential is present)
+        - h_{l,n'n''} are matrix elements between projectors
+        
+        Args:
+            ik: k-point index
+            psi_nk_g: (ngrids,) wavefunction in G-space for band n at k-point ik
+            
+        Returns:
+            V_nuc|ψ_n⟩ in G-space (ngrids,)
+        """
+        cell = self.cell
+        has_pseudo = hasattr(cell, '_pseudo') and cell._pseudo
+        
+        # 1. Apply local potential (nucleus + local PP if present)
+        psi_nk_r = self._ifft_g2r(psi_nk_g)
+        vnuc_psi_r = self._vne_R * psi_nk_r  # self._vne_R includes both nuclear and local PP
+        vnuc_psi_g = self._fft_r2g(vnuc_psi_r)
+        
+        # 2. Apply non-local pseudopotential (if present)
+        if has_pseudo:
+            vnl_psi_g = self._apply_pp_nonlocal(ik, psi_nk_g)
+            vnuc_psi_g += vnl_psi_g
+        
+        return vnuc_psi_g
+
+    def _apply_pp_nonlocal(self, ik, psi_nk_g):
+        """Apply non-local pseudopotential projector operator.
+        
+        Computes: V_nl|ψ_n⟩ = Σ_{ia,lm,n'} <p_{ia,l,n'}|ψ_n⟩ h_{l,n'n''} |p_{ia,l,n''}⟩
+        
+        Args:
+            ik: k-point index
+            psi_nk_g: (ngrids,) wavefunction in G-space
+            
+        Returns:
+            V_nl|ψ_n⟩ in G-space (ngrids,)
+        """
+        from pyscf.pbc.gto.pseudo import pp
+        from pyscf import gto
+        
+        cell = self.cell
+        Gv = self._Gv
+        kpt = self.kpts[ik]
+        G_rad = lib.norm(Gv, axis=1)
+        
+        # Transform wavefunction to G-space (already in G-space, but need components)
+        # Note: psi_nk_g is already in G-space
+        
+        vnl_g = np.zeros_like(psi_nk_g)
+        
+        # Setup fake molecule for evaluating projectors
+        fakemol = gto.Mole()
+        fakemol._atm = np.zeros((1, gto.ATM_SLOTS), dtype=np.int32)
+        fakemol._bas = np.zeros((1, gto.BAS_SLOTS), dtype=np.int32)
+        ptr = gto.PTR_ENV_START
+        fakemol._env = np.zeros(ptr + 10)
+        fakemol._bas[0, gto.NPRIM_OF] = 1
+        fakemol._bas[0, gto.NCTR_OF] = 1
+        fakemol._bas[0, gto.PTR_EXP] = ptr + 3
+        fakemol._bas[0, gto.PTR_COEFF] = ptr + 4
+        
+        # Get structure factors for the selected k-point
+        SI = cell.get_SI(mesh=self.mesh)  # (natm, ngrids)
+        
+        # Buffer for projectors (handle up to l=0..3, nl<=3)
+        buf = np.empty((48, self.ngrids), dtype=np.complex128)
+        
+        # Loop over atoms
+        for ia in range(cell.natm):
+            symb = cell.atom_symbol(ia)
+            if symb not in cell._pseudo:
+                continue
+            
+            pp_data = cell._pseudo[symb]
+            # pp_data structure: [Zeff, rloc, nexp, cexp, nproj, [l, rl, nl, hl], ...]
+            # pp_data[5:] contains projector blocks: (l, rl, nl, hl)
+            
+            p1 = 0
+            # Evaluate projector functions in G+k space
+            Gk = Gv + kpt
+            
+            for l, proj in enumerate(pp_data[5:]):
+                rl, nl, hl = proj
+                
+                if nl > 0:
+                    # Setup fake molecule for angular momentum l
+                    fakemol._bas[0, gto.ANG_OF] = l
+                    fakemol._env[ptr + 3] = 0.5 * rl ** 2
+                    fakemol._env[ptr + 4] = rl ** (l + 1.5) * np.pi ** 1.25
+                    
+                    # Evaluate Gaussian at |G+k|
+                    pYlm_part = fakemol.eval_gto('GTOval', Gk)  # (ngrids, ncomp)
+                    
+                    p0, p1 = p1, p1 + nl * (l * 2 + 1)
+                    
+                    # Compute radial part q_kl(|G+k|*rl) and multiply by Ylm
+                    pYlm = np.ndarray((nl, l * 2 + 1, self.ngrids), 
+                                     dtype=np.complex128, buffer=buf[p0:p1])
+                    for k in range(nl):
+                        qkl = pp._qli(G_rad * rl, l, k)
+                        pYlm[k] = pYlm_part.T * qkl
+            
+            # Contract projectors with wavefunction and apply h matrix
+            if p1 > 0:
+                # SPG_lmi = structure_factor * projectors (complex), shape: (p1, ngrids)
+                SPG_lmi = buf[:p1].copy()
+                SPG_lmi *= SI[ia].conj()  # Apply structure factor for atom ia
+                
+                # Contract projectors with wavefunction in G-space
+                # SPG_lm_aoGs = Σ_G SPG_lm(G) * ψ(G) 
+                # This is a simple dot product: (p1, ngrids) @ (ngrids,) -> (p1,)
+                SPG_lm_aoGs = np.dot(SPG_lmi, psi_nk_g)  # Direct matrix-vector product
+                
+                # Apply h matrix and accumulate
+                p1_reset = 0
+                for l, proj in enumerate(pp_data[5:]):
+                    rl, nl, hl = proj
+                    if nl > 0:
+                        p0, p1_reset = p1_reset, p1_reset + nl * (l * 2 + 1)
+                        hl = np.asarray(hl)
+                        
+                        # Reshape: (nl*(2l+1),) -> (nl, 2l+1)
+                        SPG_lm_aoG = SPG_lm_aoGs[p0:p1_reset].reshape(nl, l * 2 + 1)
+                        
+                        # Apply h matrix: (nl, nl) @ (nl, 2l+1) -> (nl, 2l+1)
+                        tmp = np.einsum('ij,jm->im', hl, SPG_lm_aoG)
+                        
+                        # Contract back: buf[p0:p1_reset] has shape (nl*(2l+1), ngrids)
+                        # Reshape tmp back to (nl*(2l+1),) for contraction
+                        tmp_flat = tmp.ravel()
+                        proj_back = np.dot(buf[p0:p1_reset].T.conj(), tmp_flat)
+                        vnl_g += proj_back
+        
+        # Normalize by volume (from pseudopotential convention)
+        vnl_g *= (1.0 / cell.vol)
+        
+        return vnl_g
 
     def apply_fock(self, ik,  psi_nk_g, rho_r=None, with_j=True, with_k=True):
         """Apply Fock operator to a single wavefunction.
@@ -610,10 +783,9 @@ class KPWSCF(lib.StreamObject):
         t_g = self._kin_diag[ik]  # (ngrids,)
         F_psi_g += t_g * psi_nk_g
         
-        # 2. Apply Local Potential V_ne (nuclear-electron attraction)
-        psi_nk_r = self._ifft_g2r(psi_nk_g)
-        vne_psi_r = self._vne_R * psi_nk_r
-        F_psi_g += self._fft_r2g(vne_psi_r)
+        # 2. Apply Nuclear and Pseudopotential Potential (local + non-local)
+        vnuc_psi_g = self._apply_nuc(ik, psi_nk_g)
+        F_psi_g += vnuc_psi_g
         
         # Get density (use provided or compute from current state)
         if rho_r is None:
@@ -626,6 +798,7 @@ class KPWSCF(lib.StreamObject):
             coulG = self._coulG0 if self._coulG0 is not None else pbctools.get_coulG(self.cell, mesh=self.mesh)
             vH_g = coulG * rho_g
             vH_r = self._ifft_potential_g2r(vH_g).real
+            psi_nk_r = self._ifft_g2r(psi_nk_g)
             vH_psi_r = vH_r * psi_nk_r
             F_psi_g += self._fft_r2g(vH_psi_r)
         
@@ -697,10 +870,10 @@ class KPWSCF(lib.StreamObject):
                 E_kin_contrib = occ_weight * np.sum((t_diag * np.abs(psi_g)**2).real)
                 E_kin += E_kin_contrib
                 
-                # Nuclear-electron energy: <ψ|V_ne|ψ> = ∫ ψ*(r) V_ne(r) ψ(r) dr
-                #                                      = Σ_r ψ*(r) V_ne(r) ψ(r) * (V/N)
-                vne_psi_r = self._vne_R * psi_r
-                E_ne_contrib = occ_weight * np.sum(psi_r.conj() * vne_psi_r).real * self.grid_weight
+                # Nuclear-electron energy: <ψ|V_nuc|ψ> includes both local and non-local PP
+                # Use _apply_nuc to get the full nuclear potential operator applied to ψ
+                Vnuc_psi_g = self._apply_nuc(ik, psi_g)
+                E_ne_contrib = occ_weight * np.vdot(psi_g, Vnuc_psi_g).real
                 E_ne += E_ne_contrib
                 
                 
@@ -880,7 +1053,7 @@ class KPWSCF(lib.StreamObject):
             # 6. Precondition residuals and expand subspace
             hdiag = self._kin_diag[ik]
             for n in range(self.nband):
-                shift = 0.01
+                shift = 0.0001
                 precond_denom = hdiag - (e_sorted[n] + shift)
                 precond_denom[np.abs(precond_denom) < 1e-8] = 1e-8
                 P_n = residuals[n] / precond_denom
