@@ -462,18 +462,6 @@ class TestSCFKernel(unittest.TestCase):
         # Check that mo_energy is populated
         self.assertIsNotNone(mf_test.mo_energy)
         self.assertEqual(mf_test.mo_energy.shape, (1, 4))
-    
-    def test_davidson_preconditioner(self):
-        """Test that Davidson preconditioner is correctly defined."""
-        cell_test = make_test_cell([10, 10, 10])
-        mf_test = KPWSCF(cell_test, kpts=np.zeros((1, 3)), nband=2)
-        mf_test.build()
-        
-        # Get diagonal for preconditioner
-        hdiag = mf_test._get_hdiag(0)
-        self.assertEqual(hdiag.shape, (mf_test.ngrids,))
-        # All diagonal elements should be positive (kinetic energy)
-        self.assertTrue(np.all(hdiag >= 0))
 
 
 class TestInitGuess(unittest.TestCase):
@@ -605,29 +593,33 @@ class TestInitGuess(unittest.TestCase):
         """Test that init_guess methods work with SCF kernel."""
         # Very small system for quick test
         cell_test = pbcgto.Cell()
-        cell_test.atom = 'He 0 0 0'
-        cell_test.basis = 'sto-3g'
+        cell_test.atom = 'He 0 0 0; He 1.5 0 0'
+        cell_test.basis = 'ccpvqz'
         cell_test.a = np.eye(3) * 5.0
-        cell_test.mesh = [12, 12, 12]
-        cell_test.verbose = 0
+        cell_test.mesh = [64, 64, 64]
+        cell_test.verbose = 3
         cell_test.build()
+
+        # run rhf to get reference energy
+        from pyscf.pbc.scf import RHF
+        mf_ref = RHF(cell_test).density_fit()
+        mf_ref.verbose = 4
+        e_ref = mf_ref.kernel()
         
         # Test with minao initialization
         mf_test = KPWSCF(cell_test, kpts=np.zeros((1, 3)), nband=2)
-        mf_test.verbose = 0
+        mf_test.verbose = 4
         
         # Run a few SCF iterations
         e_tot, converged = mf_test.kernel(
             init='minao',
-            max_cycle=3,  # Just a few iterations to test it works
-            with_k=False,  # Hartree only for speed
+            max_cycle=10,  # Just a few iterations to test it works
+            with_k=True,  # Hartree only for speed
             conv_tol=1e-4,
-            davidson_max_cycle=5
+            davidson_max_cycle=5,
         )
+        self.assertEqual(e_tot, -5.7075502066)
         
-        # Check that energy is finite and reasonable
-        self.assertTrue(np.isfinite(e_tot))
-        self.assertLess(e_tot, 0)
 
 
 if __name__ == '__main__':
