@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # Copyright 2025 The PySCF Developers.
-#
 
 import numpy as np
+import scipy.linalg
 from pyscf import lib
 from pyscf.lib import logger
 from pyscf.pbc import tools as pbctools
@@ -36,10 +36,12 @@ class KPWSCF(lib.StreamObject):
         self.nk = len(self.kpts)
 
         # Mesh / grids (prefer kinetic_cutoff if provided, else explicit mesh, else cell.mesh)
-        self.mesh = self._select_mesh(mesh)
+        #self.mesh = self._select_mesh(mesh)
         # Use UniformGrids for consistent grid weights
         self.grids = pbc_gen_grid.UniformGrids(self.cell)
-        self.grids.mesh = np.asarray(self.mesh, dtype=int)
+        self.mesh = self.grids.mesh
+        logger.debug(self, 'Using mesh %s for FFT grids', str(self.mesh))
+        #self.grids.mesh = np.asarray(self.mesh, dtype=int)
         self.ngrids = int(np.prod(self.grids.mesh))
         self.vol = float(self.cell.vol)
         self.grid_weight = self.grids.weights[0] if self.ngrids > 0 else 0.0  # ∫f ≈ weight * sum(f)
@@ -59,7 +61,7 @@ class KPWSCF(lib.StreamObject):
         self.mo_energy = None  # shape (nk, nband)
 
         # Cached operators
-        self._Gv = None             # (ngrids, 3)
+        self._Gv_cache = None       # (ngrids, 3)
         self._kin_diag = None       # (nk, ngrids)
         self._vne_R = None          # (ngrids,)
         self._coulG0 = None         # (ngrids,) Coulomb kernel at k=0
@@ -80,7 +82,64 @@ class KPWSCF(lib.StreamObject):
         # Default to cell.mesh
         return tuple(np.asarray(self.cell.mesh, dtype=int))
 
+    @property
+    def _Gv(self):
+        """G-vectors on the FFT mesh (ngrids, 3)."""
+        if self._Gv_cache is None:
+            self._Gv_cache = self.cell.get_Gv(self.mesh)
+        return self._Gv_cache
+
     # ----------------------------- utilities ----------------------------- #
+    def _fft_r2g(self, psi_r_block):
+        """FFT from real-space to G-space with consistent normalization.
+        
+        Convention:
+        - R-space: ∫|ψ_r|²dr = Σ|ψ_r|² × (V/N) = 1
+        - G-space: Σ|ψ_g|² = 1
+        
+        Numpy FFT Parseval: Σ|ψ_r|² = (1/N) Σ|FFT(ψ_r)|²
+        
+        Given Σ|ψ_r|² = N/V, we have Σ|FFT(ψ_r)|² = N²/V
+        To normalize to Σ|ψ_g|² = 1, scale by: 1/√(N²/V) = √(V)/N
+        
+        psi_r_block: (nband, ngrids) or (ngrids,)
+        Returns: (nband, ngrids) or (ngrids,) complex in G-space
+        """
+        if psi_r_block.ndim == 1:
+            psi_r_2d = psi_r_block.reshape(1, -1)
+            psi_g_2d = pbctools.fft(psi_r_2d, self.mesh)
+            psi_g_2d *= np.sqrt(self.vol) / self.ngrids
+            return psi_g_2d[0]
+        else:
+            psi_g = pbctools.fft(psi_r_block, self.mesh)
+            psi_g *= np.sqrt(self.vol) / self.ngrids
+            return psi_g
+
+    def _ifft_g2r(self, psi_g_block):
+        """IFFT from G-space to real-space with consistent normalization.
+        
+        Convention:
+        - G-space: Σ|ψ_g|² = 1
+        - R-space: ∫|ψ_r|²dr = Σ|ψ_r|² × (V/N) = 1
+        
+        Numpy IFFT Parseval: Σ|IFFT(ψ_g)|² = (1/N) Σ|ψ_g|²
+        
+        Given Σ|ψ_g|² = 1, we have Σ|IFFT(ψ_g)|² = 1/N
+        To get Σ|ψ_r|² = N/V, scale by: √((N/V)/(1/N)) = √(N²/V) = N/√V
+        
+        psi_g_block: (nband, ngrids) or (ngrids,)
+        Returns: (nband, ngrids) or (ngrids,) complex in real-space
+        """
+        if psi_g_block.ndim == 1:
+            psi_g_2d = psi_g_block.reshape(1, -1)
+            psi_r_2d = pbctools.ifft(psi_g_2d, self.mesh)
+            psi_r_2d *= np.sqrt(self.ngrids)
+            return psi_r_2d[0]
+        else:
+            psi_r = pbctools.ifft(psi_g_block, self.mesh)
+            psi_r *= np.sqrt(self.ngrids)
+            return psi_r
+
     def build(self):
         """Sanity checks and operator precompute."""
         log = logger.new_logger(self, self.verbose)
@@ -99,14 +158,9 @@ class KPWSCF(lib.StreamObject):
                      str(np.asarray(ke_from_mesh)), float(np.min(ke_from_mesh)))
         except Exception:
             pass
-        self._precompute_Gv()
         self._precompute_kinetic()
-        self._build_vne_R()
+        self._build_vne()
         return self
-
-    def _precompute_Gv(self):
-        if self._Gv is None:
-            self._Gv = self.cell.get_Gv(self.mesh)
 
     def _precompute_kinetic(self):
         """Diagonal kinetic operator in G for each k: 0.5*|G+k|^2."""
@@ -116,47 +170,49 @@ class KPWSCF(lib.StreamObject):
             Gk = Gv + kpt  # broadcast
             self._kin_diag[ik] = 0.5 * np.einsum('ij,ij->i', Gk, Gk)
 
-    def _build_vne_R(self):
-        """Ewald nuclear potential on the uniform grid (real)."""
-        from pyscf.pbc.df.aft import _check_kpts  # for shape norm; no heavy import
+    def _build_vne(self):
+        """Build nuclear-electron potential V_ne in real space."""
         log = logger.new_logger(self, self.verbose)
         mesh = self.mesh
         cell = self.cell
+        
+        # Get structure factors and atomic charges
+        SI = cell.get_SI(mesh=mesh)  # (natm, ngrids) complex
+        charge = cell.atom_charges()  # Nuclear charges (positive)
+        rhoG = charge @ SI  # (ngrids,) nuclear charge density in G-space
+        
+        # Get Coulomb kernel and compute V_ne in G-space
+        # V_ne(G) = -4π*Z(G)/|G|^2 (negative for attractive potential)
+        Gv = self.cell.get_Gv()
+        coulG = pbctools.get_coulG(cell, mesh=mesh, Gv=Gv)
+        self._coulG0 = coulG  # Cache for later use
+        vneG = -rhoG * coulG  # (ngrids,) negative sign for attractive potential
+        
+        # Transform to real space
+        self._vne_R = pbctools.ifft(vneG, mesh).real
+        log.debug1('Built V_ne on grid; min/max %.6g / %.6g', 
+                   self._vne_R.min(), self._vne_R.max())
+        return self._vne_R
 
-        # Structure factors SI (natm, ngrids), atomic charges
-        SI = cell.get_SI(mesh=mesh)  # complex
-        charge = -cell.atom_charges()
-        rhoG = charge @ SI  # (ngrids,)
-
-        coulG = pbctools.get_coulG(cell, mesh=mesh)  # (ngrids,)
-        vneG = rhoG * coulG
-        vneR = pbctools.ifft(vneG, mesh).real  # (ngrids,)
-        self._vne_R = vneR
-        # Cache Coulomb kernel for later Hartree / exchange
-        self._coulG0 = coulG
-        log.debug1('Built V_ne on grid; min/max %.6g / %.6g', vneR.min(), vneR.max())
-
-    # FFT wrappers (batch over bands)
-    def _fft_r2g(self, psi_r):
-        # psi_r: (nband, ngrids)
-        return pbctools.fft(psi_r, self.mesh)
-
-    def _ifft_g2r(self, psi_g):
-        # psi_g: (nband, ngrids)
-        return pbctools.ifft(psi_g, self.mesh)
-
-    def _kerker(self, drho_R, k_screen=1.0):
-        """Kerker preconditioner in G-space for density residual.
-
-        Scales long-wavelength components to mitigate charge sloshing:
-        f(G) = |G|^2 / (|G|^2 + k_screen^2).
+    def _orthonormalize_block(self, psi_block):
+        """Orthonormalize a block of wavefunctions.
+        
+        Args:
+            psi_block: (nband, ngrids) complex array
+        Returns:
+            Orthonormalized psi_block with same shape
         """
-        drhoG = pbctools.fft(drho_R.reshape(1, -1), self.mesh)[0]
-        G2 = np.einsum('ij,ij->i', self._Gv, self._Gv)
-        fac = G2 / np.maximum(1e-12, G2 + k_screen * k_screen)
-        drhoG *= fac
-        out = pbctools.ifft(drhoG, self.mesh).real
-        return out
+        nb, ngr = psi_block.shape
+        # Compute overlap matrix S_ij = <ψ_i|ψ_j> = Σ_r ψ_i*(r) ψ_j(r) * weight
+        S = np.dot(psi_block.conj(), psi_block.T) * self.grid_weight
+        
+        # Löwdin orthonormalization: ψ' = S^(-1/2) ψ
+        e, U = np.linalg.eigh(S)
+        e = np.maximum(e, 1e-14)  # Avoid numerical issues
+        S_mhalf = U @ (np.diag(1.0 / np.sqrt(e)) @ U.conj().T)
+        
+        return S_mhalf @ psi_block
+
 
     # ----------------------------- initialization ----------------------------- #
     def init_guess(self, kind='random', seed=1):
@@ -259,183 +315,408 @@ class KPWSCF(lib.StreamObject):
         else:
             raise ValueError(f'Unknown init_guess kind: {kind}')
         # Keep G-space copy
+        logger.debug(self, 'Initialized wavefunctions in R-space with kind=%s', kind)
+        logger.debug(self, 'Wavefunction norms after initialization (R-space integral):')
+        for ik in range(nk):
+            for n in range(nb):
+                norm_r = np.sqrt(np.sum(np.abs(self.psi_r[ik, n])**2) * self.grid_weight)
+                logger.debug(self, f'  k-point {ik} band {n}: ∫|ψ_r|²dr = {norm_r:.6e}')
         self.psi_g = np.empty_like(self.psi_r)
         for ik in range(nk):
             self.psi_g[ik] = self._fft_r2g(self.psi_r[ik])
+        logger.debug(self, 'Wavefunction norms after FFT to G-space (L2 norm):')
+        for ik in range(nk):
+            for n in range(nb):
+                norm_g = np.sqrt(np.sum(np.abs(self.psi_g[ik, n])**2))
+                logger.debug(self, f'  k-point {ik} band {n}: Σ|ψ_g|² = {norm_g:.6e}')
+        
+        # report the initial energy expectation values, using compute_energy_components
+        logger.info(self, 'Initial energy expectation values per band (Eh):')
+        energy_dict = self.compute_energy_components(with_k=True)
+
         return self
 
-    def _orthonormalize_block(self, psi_r_block):
-        """Orthonormalize a (nband, ngrids) block with uniform-grid inner product.
-
-        We use standard QR on Euclidean inner product; the uniform weight is a
-        constant factor and does not affect orthogonality across vectors.
-        Final normalization is adjusted so that ∫|ψ|^2 dR ≈ 1.
-        """
-        # QR factorization (columns are grid points; we need orthonormal rows),
-        # so operate on transposed and transpose back.
-        Q, _ = np.linalg.qr(psi_r_block.T)  # (ngrids, nband)
-        psi = Q.T.astype(np.complex128, copy=False)
-        # Normalize to integral 1 with grid weight
-        norms = np.sqrt(np.maximum(1e-300, (np.abs(psi)**2).sum(axis=1) * self.grid_weight))
-        psi /= norms[:, None]
-        return psi
-
-    # ----------------------------- operators ----------------------------- #
-    def _apply_hcore(self, ik, psi_r_k):
-        """Apply H_core = T + V_ne to a (nband, ngrids) block at k.
-
-        Returns Hψ in real-space grid representation.
-        """
-        # T in G-space
-        psi_g = self._fft_r2g(psi_r_k)
-        t_g = self._kin_diag[ik]  # (ngrids,)
-        tpsi_g = psi_g * t_g[None, :]
-        tpsi_r = self._ifft_g2r(tpsi_g)
-        # V_ne in R-space
-        vpsi_r = psi_r_k * self._vne_R[None, :]
-        return tpsi_r + vpsi_r
-
-    def _apply_hcore_eff(self, ik, psi_r_k, v_eff_R):
-        """Apply H_eff = T + V_eff(R) on (nband, ngrids) at k.
-
-        v_eff_R: (ngrids,) real array (e.g., V_ne + V_H + V_xc)
-        Returns (nband, ngrids) in real space.
-        """
-        psi_g = self._fft_r2g(psi_r_k)
-        tpsi_r = self._ifft_g2r(psi_g * self._kin_diag[ik][None, :])
-        return tpsi_r + psi_r_k * v_eff_R[None, :]
-
-    def get_density_R(self):
-        """Total electron density on the grid from current ψ (closed shell).
-
-        ρ(R) = Σ_{k,n≤nocc} f_kn |ψ_kn(R)|^2 with f_kn = 2/nk.
+    def get_density_r(self):
+        """Total electron density in real space from current ψ (closed shell).
+        
+        ρ(r) = Σ_{k,n≤nocc} f_kn |ψ_kn(r)|^2 with f_kn = 2/nk for closed shell.
         Returns (ngrids,) real array.
         """
         if self.psi_r is None:
             raise RuntimeError('Call init_guess() first')
-        rho = np.zeros(self.ngrids, dtype=float)
-        occ_weight = 2.0 / self.nk
+        rho_r = np.zeros(self.ngrids, dtype=float)
+        occ_weight = 2.0 / self.nk  # For closed shell, each orbital has weight 2
         for ik in range(self.nk):
-            psi = self.psi_r[ik, :self.nocc]  # (nocc, ngr)
-            rho += occ_weight * (np.abs(psi)**2).sum(axis=0)
-        return rho
+            psi_r = self.psi_r[ik, :self.nocc]  # (nocc, ngr)
+            rho_r += occ_weight * (np.abs(psi_r)**2).sum(axis=0)
+        return rho_r
 
-    def get_vhartree_R(self, rho_R):
-        """Hartree potential on grid from density.
+    def get_density_G(self):
+        """Total electron density in G-space from current ψ̃ (closed shell).
 
-        vH(G) = coulG(G) * ρ(G); vH(R) = ifft(vH(G)).real
-        Use k=0 Coulomb kernel for Hartree.
+        ρ̃(G) = FFT[ρ(r)]
+        Returns (ngrids,) complex array.
         """
-        rhoG = pbctools.fft(rho_R.reshape(1, -1), self.mesh)[0]
-        coulG0 = self._coulG0 if self._coulG0 is not None else pbctools.get_coulG(self.cell, mesh=self.mesh)
-        vHG = rhoG * coulG0
-        vHR = pbctools.ifft(vHG, self.mesh).real
-        return vHR
+        rho_r = self.get_density_r()
+        return self._fft_r2g(rho_r)
 
-    # ----------------------------- energies ----------------------------- #
-    def _expect_from_apply(self, psi_r_k, op_psi_r_k):
-        """Return <psi|op|psi> for a block (nband, ngrids) with grid weights.
 
-        Assumes ψ are orthonormal per band; returns array (nband,).
+    def apply_hamiltonian(self, ik,  psi_nk_g, with_j=True, with_k=True):
+        """Apply full Hamiltonian to a single wavefunction.
+        
+        H = T + V_ne + V_H + V_X (for HF)
+        
+        Following the pseudocode:
+        1. Apply kinetic energy (diagonal in G-space)
+        2. Apply local potential V_ne (nuclear-electron)
+        3. Apply Hartree potential V_H (if with_j=True)
+        4. Apply exchange potential V_X (if with_k=True)
+        
+        Args:
+            ik: k-point index
+            n: band index
+            psi_nk_g: (ngrids,) wavefunction in G-space for band n at k-point ik
+            rho_total_r: (ngrids,) total electron density in real space
+            with_j: whether to include Hartree term
+            with_k: whether to include exchange term
+        Returns:
+            H|ψ⟩ in G-space (ngrids,)
         """
-        # Weighted inner product over grid
-        val = np.einsum('in,in->i', psi_r_k.conj(), op_psi_r_k)
-        return self.grid_weight * val.real
-
-    def energy_terms(self, v_eff_R=None, rho_R=None, vH_R=None, with_k=False, debug=False):
-        """Compute energy components for current ψ and potentials (HF: J and optional K).
-
-        Returns dict with keys: E_T, E_ne, E_H, E_x, E_one_e, E_tot, E_nn.
-        When debug=True, also returns E_ne_rho (from density*V_ne) and basic v_ne stats.
-        vH_R, rho_R can be provided to avoid recomputation.
-        """
-        if v_eff_R is None:
-            v_eff_R = self._vne_R
-        if rho_R is None:
-            rho_R = self.get_density_R()
-        if vH_R is None:
-            vH_R = self.get_vhartree_R(rho_R)
-
-        E_T = 0.0
-        E_ne = 0.0
-        # Sum occupied expectations
-        occ_weight = 2.0 / self.nk
-        zv = np.zeros_like(v_eff_R)
-        for ik in range(self.nk):
-            psi = self.psi_r[ik]
-            # T part
-            tpsi = self._apply_hcore_eff(ik, psi, zv)
-            e_t_bands = self._expect_from_apply(psi, tpsi)
-            # V_ne part
-            vnepsi = psi * self._vne_R[None, :]
-            e_ne_bands = self._expect_from_apply(psi, vnepsi)
-            E_T += occ_weight * e_t_bands[:self.nocc].sum()
-            E_ne += occ_weight * e_ne_bands[:self.nocc].sum()
-
-        # Hartree energy: 0.5 ∫ ρ vH
-        E_H = self.grid_weight * float(np.dot(rho_R, vH_R))
-
-        # Exchange energy (gamma-only implementation)
-        E_x = 0.0
+        H_psi_g = np.zeros_like(psi_nk_g)
+        
+        # 1. Apply Kinetic Energy (Diagonal in G-space)
+        # T = 0.5 * |k + G|^2
+        t_g = self._kin_diag[ik]  # (ngrids,)
+        H_psi_g += t_g * psi_nk_g
+        
+        # 2. Apply Local Potential V_ne (nuclear-electron attraction)
+        psi_nk_r = self._ifft_g2r(psi_nk_g)
+        vne_psi_r = self._vne_R * psi_nk_r
+        H_psi_g += self._fft_r2g(vne_psi_r)
+        rho_total_r = self.get_density_r()  # Update density from current ψ
+        # 3. Apply Hartree Potential V_H (electron-electron repulsion, direct term)
+        if with_j:
+            # V_H(r) from total density (precomputed)
+            rho_g = self._fft_r2g(rho_total_r)
+            coulG = self._coulG0 if self._coulG0 is not None else pbctools.get_coulG(self.cell, mesh=self.mesh)
+            vH_g = coulG * rho_g
+            vH_r = self._ifft_g2r(vH_g).real
+            vH_psi_r = vH_r * psi_nk_r
+            H_psi_g += self._fft_r2g(vH_psi_r)
+        
+        # 4. Apply Exchange Potential V_X (electron-electron repulsion, exchange term)
         if with_k:
-            if self.nk != 1:
-                raise NotImplementedError('Exchange (K) currently implemented for gamma-only (nk=1)')
-            # Build K|phi_i> for occupied orbitals and compute -0.5 * sum_i <phi_i|K|phi_i>
-            occ_weight = 2.0 / self.nk
-            phi_occ = self.psi_r[0, :self.nocc]
-            Kphi = self._apply_exchange_gamma(phi_occ)
-            for i in range(self.nocc):
-                e_i = self.grid_weight * float(np.vdot(phi_occ[i], Kphi[i]).real)
-                E_x += -0.5 * occ_weight * e_i
+            H_psi_g += self._apply_k(ik, psi_nk_g)
+        
+        return H_psi_g
 
-        E_one_e = E_T + E_ne
-        E_tot = E_T + E_ne + E_H + E_x
-        # Nuclear-nuclear Ewald (repulsion)
-        try:
-            E_nn = float(self.cell.energy_nuc())
-        except Exception:
-            E_nn = 0.0
-        out = dict(E_T=E_T, E_ne=E_ne, E_H=E_H, E_x=E_x,
-                   E_one_e=E_one_e, E_tot=E_tot, E_nn=E_nn,
-                   E_tot_plus_nuc=E_tot+E_nn)
-        if debug:
-            E_ne_rho = self.grid_weight * float(np.dot(rho_R, self._vne_R))
-            vne = self._vne_R
-            out.update(E_ne_rho=E_ne_rho,
-                       vne_mean=float(vne.mean()), vne_min=float(vne.min()), vne_max=float(vne.max()))
-        return out
 
-    def _apply_exchange_gamma(self, psi_r_block, occ_orbs=None):
-        """Apply exchange operator K (gamma-only) to a block of vectors.
 
-        psi_r_block: (nb, ngrids)
-        occ_orbs: optional (nocc, ngrids); defaults to current occupied at k=Gamma.
-        Returns Kpsi with shape (nb, ngrids).
+    def _apply_j(self, psi_nk_g, rho_total_r):
+        """Apply Hartree potential V_H to wavefunction.
+        
+        V_H is computed from total density once per iteration and applied to all bands.
+        
+        Args:
+            psi_nk_g: (ngrids,) wavefunction in G-space for single band
+            rho_total_r: (ngrids,) total electron density in real space
+        Returns:
+            V_H * psi in G-space (ngrids,)
         """
-        if self.nk != 1:
-            raise NotImplementedError('Exchange (K) is only available for gamma-only (nk=1)')
-        if occ_orbs is None:
-            occ_orbs = self.psi_r[0, :self.nocc]
-        coulG0 = self._coulG0 if self._coulG0 is not None else pbctools.get_coulG(self.cell, mesh=self.mesh)
-        nb, ngr = psi_r_block.shape
-        Kpsi = np.zeros((nb, ngr), dtype=np.complex128)
-        for phi in occ_orbs:
-            # chi_beta(r) = phi*(r) * psi_beta(r) for all beta in block
-            chi = psi_r_block * phi.conj()[None, :]
-            chiG = pbctools.fft(chi, self.mesh)
-            uG = chiG * coulG0[None, :]
-            uR = pbctools.ifft(uG, self.mesh)
-            Kpsi += phi[None, :] * uR
-        return Kpsi
+        # Transform density to G-space
+        rho_g = self._fft_r2g(rho_total_r)
+        
+        # Apply Coulomb kernel in G-space: V_H(G) = (4π/|G|^2) * ρ(G)
+        coulG = self._coulG0 if self._coulG0 is not None else pbctools.get_coulG(self.cell, mesh=self.mesh)
+        vH_g = coulG * rho_g  # (ngrids,)
+        
+        # Transform V_H to real space
+        vH_r = self._ifft_g2r(vH_g).real
+        
+        # Transform wavefunction to real space, multiply, and transform back
+        psi_r = self._ifft_g2r(psi_nk_g)
+        vH_psi_r = vH_r * psi_r
+        vH_psi_g = self._fft_r2g(vH_psi_r)
+        
+        return vH_psi_g
 
-    def _apply_fock(self, ik, psi_r_k, v_eff_R, with_k=False):
-        """Apply Fock operator F = T + V_eff - K (if with_k and supported)."""
-        # One-body part
-        Fpsi = self._apply_hcore_eff(ik, psi_r_k, v_eff_R)
-        # Exchange
-        if with_k and self.nk == 1 and ik == 0:
-            Fpsi -= self._apply_exchange_gamma(psi_r_k)
-        return Fpsi
+    def compute_energy_components(self, with_k=True):
+        """Compute energy components efficiently using expectation values.
+        
+        E_HF = E_kin + E_ne + E_hartree + E_exchange + E_nuc
+        
+        Uses: E_op = Σ_{k,n≤nocc} f_kn <ψ_kn|O|ψ_kn>
+        where f_kn = 2/nk for closed shell.
+        
+        Args:
+            rho_r: total electron density in real space
+            with_k: whether to include exchange
+            
+        Returns:
+            dict with energy components: 
+            {E_kin, E_ne, E_hartree, E_exchange, E_nuc, E_tot}
+        """
+        occ_weight = 2.0 / self.nk  # Closed shell
+        
+        # Sanity check on density
+        
+        # Precompute Hartree potential from density
+        rho_g = self.get_density_G()
+        coulG = self._coulG0 if self._coulG0 is not None else pbctools.get_coulG(self.cell, mesh=self.mesh)
+        vH_g = coulG * rho_g
+        vH_r = self._ifft_g2r(vH_g).real
+        
+        
+        # Initialize energy components
+        E_kin = 0.0
+        E_ne = 0.0
+        E_hartree = 0.0
+        E_exchange = 0.0
+        
+        # Debug: check if we have occupied orbitals
+        if self.nocc == 0:
+            raise RuntimeError("No occupied orbitals (self.nocc = 0)!")
+        
+        # Loop over k-points and occupied orbitals
+        for ik in range(self.nk):
+            for n in range(self.nocc):
+                logger.debug(self, f"Computing energy contributions for k-point {ik}, band {n}")
+                psi_g = self.psi_g[ik, n].copy()
+                psi_r = self._ifft_g2r(psi_g)
+                
+                # Verify normalization
+                norm_g = np.sqrt(np.sum(np.abs(psi_g)**2))
+                norm_r_integral = np.sqrt(np.sum(np.abs(psi_r)**2) * self.grid_weight)
+                logger.debug(self, f"  Σ|ψ_g|² = {norm_g:.6e}, ∫|ψ_r|²dr = {norm_r_integral:.6e}")
+                
+                # Kinetic energy: <ψ|T|ψ> = Σ_G T(G) |ψ(G)|²
+                # With L2 normalization (Σ|ψ_g|²=1), we compute directly without grid_weight
+                t_diag = self._kin_diag[ik]
+                E_kin_contrib = occ_weight * np.sum((t_diag * np.abs(psi_g)**2).real)
+                E_kin += E_kin_contrib
+                logger.debug(self, f"  E_kin contribution: {E_kin_contrib:.6e}")
+                
+                # Nuclear-electron energy: <ψ|V_ne|ψ> = ∫ ψ*(r) V_ne(r) ψ(r) dr
+                #                                      = Σ_r ψ*(r) V_ne(r) ψ(r) * (V/N)
+                vne_psi_r = self._vne_R * psi_r
+                E_ne_contrib = occ_weight * np.sum(psi_r.conj() * vne_psi_r).real * self.grid_weight
+                E_ne += E_ne_contrib
+                logger.debug(self, f"  E_ne contribution: {E_ne_contrib:.6e}")
+                
+                # Hartree energy contribution: <ψ|V_H|ψ> = ∫ ψ*(r) V_H(r) ψ(r) dr
+                vH_psi_r = vH_r * psi_r
+                E_h_contrib = occ_weight * np.sum(psi_r.conj() * vH_psi_r).real * self.grid_weight
+                E_hartree += E_h_contrib
+                logger.debug(self, f"  E_hartree contribution: {E_h_contrib:.6e}, {self.grid_weight=:.6e}")
+                
+                # Exchange energy: <ψ|K|ψ> = ∫ ψ*(r) K[ψ](r) dr
+                if with_k:
+                    K_psi_g = self._apply_k(ik, psi_g)
+                    K_psi_r = self._ifft_g2r(K_psi_g)
+                    E_x_contrib = 0.5*occ_weight * np.sum(psi_r.conj() * K_psi_r).real * self.grid_weight
+                    logger.debug(self, f"  E_exchange contribution: {E_x_contrib:.6e}")
+                    E_exchange += E_x_contrib
+        
+        
+        # Nuclear-nuclear repulsion (Ewald energy for periodic systems)
+        if hasattr(self.cell, 'energy_nuc'):
+            E_nuc = self.cell.energy_nuc()
+        else:
+            E_nuc = 0.0
+        
+        # Total energy
+        E_tot = E_kin + E_ne + E_hartree + E_exchange + E_nuc
+        
+        return {
+            'E_kin': E_kin,
+            'E_ne': E_ne,
+            'E_hartree': E_hartree,
+            'E_exchange': E_exchange,
+            'E_nuc': E_nuc,
+            'E_tot': E_tot
+        }
+
+    def _apply_k(self, ik, psi_nk_g):
+        """Apply exchange operator K to wavefunction (Gamma-point only for now).
+        
+        K|ψ_n⟩ = -Σ_{n'∈occ} ∫ dr' ψ_{n'}*(r') ψ_n(r') / |r-r'| ψ_{n'}(r)
+        
+        In Fourier space:
+        1. Compute pair density ρ_{nn'}(r) = ψ_n*(r) ψ_{n'}(r)
+        2. Solve Poisson in G-space: V_{nn'}(G) = (4π/|G|^2) FFT[ρ_{nn'}(r)]
+        3. Transform back: V_{nn'}(r) = IFFT[V_{nn'}(G)]
+        4. Accumulate: K|ψ_n⟩ += -V_{nn'}(r) * ψ_{n'}(r)
+        
+        Args:
+            ik: k-point index (currently assumes Gamma point, ik=0)
+            psi_nk_g: (ngrids,) wavefunction in G-space for band n at k-point ik
+        Returns:
+            K|ψ_n⟩ in G-space (ngrids,)
+        """
+        coulG = self._coulG0 if self._coulG0 is not None else pbctools.get_coulG(self.cell, mesh=self.mesh, exxdiv='ewald')
+        
+        # Transform input wavefunction to real space
+        psi_n_r = self._ifft_g2r(psi_nk_g)
+        
+        # Initialize exchange contribution
+        k_psi_g = np.zeros_like(psi_nk_g)
+        
+        # Loop over all occupied orbitals
+        for n_occ in range(self.nocc):
+            # Get occupied orbital in real space
+            psi_occ_g = self.psi_g[ik, n_occ]  # (ngrids,)
+            psi_occ_r = self._ifft_g2r(psi_occ_g)
+            
+            # Compute pair density: ρ_{n,n'}(r) = ψ_{n'}*(r) * ψ_n(r)
+            rho_ij_r = psi_occ_r.conj() * psi_n_r  # (ngrids,)
+            
+            # Transform to G-space
+            rho_ij_g = self._fft_r2g(rho_ij_r)  # (ngrids,)
+            
+            # Apply Coulomb kernel: V_{n,n'}(G) = (4π/|G|^2) * ρ_{n,n'}(G)
+            V_ij_g = coulG * rho_ij_g  # (ngrids,)
+            
+            # Transform back to real space
+            V_ij_r = self._ifft_g2r(V_ij_g)  # (ngrids,)
+            
+            # Accumulate exchange: -V_{n,n'}(r) * ψ_{n'}(r)
+            k_psi_r = -V_ij_r * psi_occ_r  # (ngrids,)
+            k_psi_g += self._fft_r2g(k_psi_r)  # (ngrids,)
+        
+        return k_psi_g*0.5
+
+
+    def _scf_davidson(self, ik, psi_g_init, with_k=True, tol=1e-6, max_cycle=30):
+        """Custom Davidson diagonalization with SCF density update.
+        
+        Unlike standard Davidson, this updates the density and Hamiltonian
+        during the Davidson iterations to maintain self-consistency.
+        
+        Args:
+            ik: k-point index
+            psi_g_init: Initial guess wavefunctions (nband, ngrids) in G-space
+            with_k: Whether to include exchange
+            tol: Convergence tolerance for residuals
+            max_cycle: Maximum Davidson iterations
+            
+        Returns:
+            converged: (nband,) boolean array
+            energies: (nband,) eigenvalues
+            psi_g: (nband, ngrids) eigenvectors in G-space
+        """
+        nband = psi_g_init.shape[0]
+        ngrids = psi_g_init.shape[1]
+        logger.debug(self, f'Starting SCF Davidson for k-point {ik}, nband={nband}') 
+        # Initialize subspace with input wavefunctions
+        subspace = []
+        for n in range(nband):
+            psi = psi_g_init[n].copy()
+            # Normalize
+            norm = np.sqrt(np.sum(np.abs(psi)**2))
+            if norm > 1e-10:
+                psi /= norm
+            subspace.append(psi)
+        
+        # Diagonal preconditioner
+        hdiag = self._get_hdiag(ik)
+        
+        energies = np.zeros(nband)
+        converged = np.zeros(nband, dtype=bool)
+        
+        for davidson_iter in range(max_cycle):
+            nv = len(subspace)  # Current subspace size
+            
+            # Orthonormalize subspace using QR decomposition
+            # Stack vectors as columns
+            subspace_matrix = np.column_stack([v.reshape(-1) for v in subspace])
+            Q, R = np.linalg.qr(subspace_matrix)
+            subspace = [Q[:, i] for i in range(Q.shape[1])]
+            nv = len(subspace)
+            
+            # Build subspace Hamiltonian matrix
+            # First, update density from current best wavefunctions
+            if davidson_iter > 0:
+                # Update orbitals at this k-point
+                for n in range(min(nband, nv)):
+                    self.psi_g[ik, n] = subspace[n].copy()
+                    self.psi_r[ik, n] = self._ifft_g2r(subspace[n])
+            
+            # Build H in subspace by applying H to all basis vectors
+            H_subspace = np.zeros((nv, nv), dtype=np.complex128)
+            
+            for i in range(nv):
+                # Apply Hamiltonian
+                H_psi_i = self.apply_hamiltonian(ik, subspace[i], 
+                                                with_j=True, with_k=with_k)
+                for j in range(nv):
+                    H_subspace[j, i] = np.vdot(subspace[j].conj(), H_psi_i)
+            
+            # Since subspace is orthonormal, S = I, so just solve H c = E c
+            e, c = np.linalg.eigh(H_subspace)
+            
+            # Extract lowest nband eigenpairs
+            idx = np.argsort(e.real)[:nband]
+            energies = e.real[idx]
+            
+            # Build eigenvectors in full space
+            psi_g_new = np.zeros((nband, ngrids), dtype=np.complex128)
+            for n in range(nband):
+                for i in range(nv):
+                    psi_g_new[n] += c[i, idx[n]] * subspace[i]
+                # Normalize
+                norm = np.sqrt(np.sum(np.abs(psi_g_new[n])**2))
+                if norm > 1e-10:
+                    psi_g_new[n] /= norm
+            
+            # Compute residuals for each eigenstate
+            max_res = 0.0
+            new_vectors = []
+            
+            for n in range(nband):
+                # Apply H to eigenvector
+                H_psi_n = self.apply_hamiltonian(ik, psi_g_new[n],
+                                                with_j=True, with_k=with_k)
+                # Residual: R = H|ψ⟩ - E|ψ⟩
+                residual = H_psi_n - energies[n] * psi_g_new[n]
+                res_norm = np.sqrt(np.sum(np.abs(residual)**2))
+                max_res = max(max_res, res_norm)
+                
+                if res_norm < tol:
+                    converged[n] = True
+                else:
+                    # Precondition residual: P = R / (H_diag - E)
+                    diagd = hdiag - (energies[n] - 1e-3)
+                    diagd[np.abs(diagd) < 1e-8] = 1e-8
+                    precond_res = residual / diagd
+                    
+                    # Orthogonalize against existing subspace
+                    for v in subspace:
+                        precond_res -= np.vdot(v, precond_res) * v
+                    
+                    # Normalize and add to subspace
+                    norm = np.sqrt(np.sum(np.abs(precond_res)**2))
+                    if norm > 1e-10:
+                        precond_res /= norm
+                        new_vectors.append(precond_res)
+            
+            # Check convergence
+            if np.all(converged) or max_res < tol:
+                logger.debug(self, f'  Davidson converged at iteration {davidson_iter+1}, max_res={max_res:.3e}')
+                break
+            
+            # Add new vectors to subspace (with size limit)
+            for v in new_vectors[:nband]:  # Add at most nband new vectors
+                subspace.append(v)
+            
+            # Restart if subspace gets too large
+            if len(subspace) > 3 * nband:
+                logger.debug(self, f'  Davidson restart at iteration {davidson_iter+1}, subspace size={len(subspace)}')
+                subspace = [psi_g_new[n].copy() for n in range(nband)]
+        
+        # Update final wavefunctions
+        subspace[:nband] = [psi_g_new[n] for n in range(nband)]
+        
+        return converged, energies, psi_g_new
 
     def _precondition_residual(self, ik, R_r, kappa=1.0):
         """Simple diagonal preconditioner in G-space: divide by T+κ."""
@@ -444,276 +725,162 @@ class KPWSCF(lib.StreamObject):
         Rg /= den
         return self._ifft_g2r(Rg)
 
-    def _iterate_bands(self, ik, v_eff_R, with_k, nsweeps=2, step=0.5, prec_kappa=1.0,
-                      occ_only=True, step_clip=0.1):
-        """Few sweeps of preconditioned steepest descent + subspace rotation.
-
-        occ_only: update only occupied bands in SD step (stabilizes density)
-        step_clip: clip factor for max SD move per band (in L2, weighted)
+    def _get_hdiag(self, ik):
+        """Diagonal elements of Hamiltonian for preconditioning.
+        
+        Returns kinetic energy diagonal (approximate diagonal of H).
         """
-        psi = self.psi_r[ik]
-        for _ in range(max(1, int(nsweeps))):
-            # Build subspace and rotate to (approx) diagonal form
-            Hpsi = self._apply_fock(ik, psi, v_eff_R, with_k)
-            Hsub = (psi.conj() @ Hpsi.T) * self.grid_weight
-            #Hsub = 0.5 * (Hsub + Hsub.conj().T)
-            #print(Hsub)
-            eig, U = np.linalg.eigh(Hsub)
-            idx = np.argsort(eig)
-            eig, U = eig[idx], U[:, idx]
-            #print("eigenvalues:", eig)
-            psi = (U.conj().T @ psi)
-            #psi = self._orthonormalize_block(psi)
-            # Residual for occupied + a few virtuals (use all bands available)
-            Hpsi = self._apply_fock(ik, psi, v_eff_R, with_k)
-            res = Hpsi - psi * eig[:, None]
-            # Optionally only update occupied subspace to avoid large density swings
-            if occ_only:
-                res[self.nocc:] = 0.0
-            # Precondition and move
-            res_p = self._precondition_residual(ik, res, kappa=prec_kappa)
-            # Step-size clipping based on residual norms (weighted L2)
-            psi = psi - float(step) * res_p
-            #psi = self._orthonormalize_block(psi)
-        # Final subspace diag to update eigenvalues
-        Hpsi = self._apply_fock(ik, psi, v_eff_R, with_k)
-        Hsub = (psi.conj() @ Hpsi.T) * self.grid_weight
-        Hsub = 0.5 * (Hsub + Hsub.conj().T)
-        eig, U = np.linalg.eigh(Hsub)
-        idx = np.argsort(eig)
-        eig, U = eig[idx], U[:, idx]
-        psi = (U.conj().T @ psi)
-        psi = self._orthonormalize_block(psi)
-        self.psi_r[ik] = psi
-        self.psi_g[ik] = self._fft_r2g(psi)
-        if self.mo_energy is None:
-            self.mo_energy = np.zeros((self.nk, self.nband))
-        self.mo_energy[ik] = eig
-        return eig
+        return self._kin_diag[ik]
 
-    def _ortho_metrics(self):
-        """Compute orthonormality diagnostics in R and G spaces for all k.
+    # ----------------------------- SCF loop (G-space primary) ----------------------------- #
+    def kernel(self, init='random', max_cycle=50, conv_tol=1e-7, conv_tol_rho=1e-6,
+               alpha=0.3, with_k=True, davidson_tol=1e-6, davidson_max_cycle=30,
+               ):
+        """Self-consistent HF loop in G-space (J and optional K); no XC.
+        
+        Uses Davidson diagonalization to solve for eigenstates at each SCF iteration.
 
-        Returns a dict with max deviations across k-points:
-        - max_diag_dev_r/g: max |S_ii - 1| in real/G spaces
-        - max_offdiag_r/g: max |S_ij| for i!=j in real/G spaces
+        Args:
+            init: initialization method ('random', 'pw', 'khf-1e', 'atom')
+            max_cycle: maximum number of SCF iterations
+            conv_tol: energy convergence tolerance
+            conv_tol_rho: density convergence tolerance
+            alpha: linear mixing parameter for density (0<alpha<=1)
+            with_k: include exchange operator (gamma-only for now)
+            davidson_tol: tolerance for Davidson diagonalization
+            davidson_max_cycle: max Davidson iterations
+            trace: verbose output for each iteration
+
+        Returns:
+            (E_tot, converged)
         """
-        if self.psi_r is None or self.psi_g is None:
-            return dict(max_diag_dev_r=np.nan, max_offdiag_r=np.nan,
-                        max_diag_dev_g=np.nan, max_offdiag_g=np.nan)
-        gw_r = self.grid_weight
-        # Parseval scaling for our FFT convention (fft:1, ifft:1/N)
-        N = float(self.ngrids)
-        gw_g = self.vol / (N * N)
-        max_diag_dev_r = 0.0
-        max_offdiag_r = 0.0
-        max_diag_dev_g = 0.0
-        max_offdiag_g = 0.0
-        I = None
-        for ik in range(self.nk):
-            psi_r = self.psi_r[ik]  # (nb, ngr)
-            psi_g = self.psi_g[ik]  # (nb, ngr)
-            # Real-space Gram matrix
-            S_r = (psi_r.conj() @ psi_r.T) * gw_r
-            # G-space Gram matrix (scaled so that <psi|psi> matches R-space)
-            S_g = (psi_g.conj() @ psi_g.T) * gw_g
-            if I is None or I.shape != S_r.shape:
-                I = np.eye(S_r.shape[0])
-            # Diagonal deviations from 1
-            dr = np.max(np.abs(np.diag(S_r) - 1.0))
-            dg = np.max(np.abs(np.diag(S_g) - 1.0))
-            # Off-diagonal magnitudes
-            S_r_off = S_r - np.diag(np.diag(S_r))
-            S_g_off = S_g - np.diag(np.diag(S_g))
-            or_max = np.max(np.abs(S_r_off)) if S_r_off.size else 0.0
-            og_max = np.max(np.abs(S_g_off)) if S_g_off.size else 0.0
-            max_diag_dev_r = max(max_diag_dev_r, float(dr))
-            max_diag_dev_g = max(max_diag_dev_g, float(dg))
-            max_offdiag_r = max(max_offdiag_r, float(or_max))
-            max_offdiag_g = max(max_offdiag_g, float(og_max))
-        return dict(max_diag_dev_r=max_diag_dev_r,
-                    max_offdiag_r=max_offdiag_r,
-                    max_diag_dev_g=max_diag_dev_g,
-                    max_offdiag_g=max_offdiag_g)
-
-    class _SimpleDIIS:
-        """Minimal Pulay DIIS for scalar fields on uniform grids.
-
-        Stores pairs (vec_i, err_i) and extrapolates vec.
-        Inner products are weighted by grid_weight.
-        """
-        def __init__(self, space=6, weight=1.0):
-            self.space = int(space)
-            self.weight = float(weight)
-            self._vecs = []
-            self._errs = []
-
-        def push(self, vec, err):
-            self._vecs.append(np.array(vec, copy=True))
-            self._errs.append(np.array(err, copy=True))
-            if len(self._vecs) > self.space:
-                self._vecs.pop(0)
-                self._errs.pop(0)
-
-        def extrapolate(self, grid_weight):
-            m = len(self._errs)
-            if m < 2:
-                return self._vecs[-1]
-            # Build B matrix
-            B = np.empty((m+1, m+1), dtype=float)
-            B[0, 0] = 0.0
-            B[0, 1:] = -1.0
-            B[1:, 0] = -1.0
-            for i in range(m):
-                for j in range(m):
-                    B[i+1, j+1] = grid_weight * float(np.dot(self._errs[i], self._errs[j]))
-            rhs = np.zeros(m+1, dtype=float)
-            rhs[0] = -1.0
-            try:
-                coef = np.linalg.solve(B, rhs)[1:]
-            except np.linalg.LinAlgError:
-                return self._vecs[-1]
-            v = np.zeros_like(self._vecs[0])
-            for c, vi in zip(coef, self._vecs):
-                v += c * vi
-            return v
-
-    # ----------------------------- SCF loop (J only) ----------------------------- #
-    def kernel_scf(self, init='random', max_cycle=50, conv_tol=1e-7, conv_tol_rho=1e-6,
-                      alpha=0.3, with_k=True, diis_space=6, diis_start_cycle=2, kerker_k=1.0,
-                      band_nsweeps=2, band_step=0.6, band_prec_kappa=1.0, trace=False):
-        """Self-consistent HF loop (J and optional K); no XC.
-
-        alpha: linear mixing parameter for density (0<alpha<=1)
-        with_k: include exchange operator (gamma-only for now)
-        Returns (E_tot, converged)
-        """
-        log = logger.new_logger(self, self.verbose)
-        log_iter = log.note if trace else log.info
+        # Build operators and initialize
         self.build()
         self.init_guess(kind=init)
-
-        # Initial diagonalization with V_ne only
-        self.diagonalize_hcore()
-        rho = self.get_density_R()
-        vH = self.get_vhartree_R(rho)
-        v_eff = self._vne_R + vH
-        e_prev = None
-        diis = self._SimpleDIIS(space=diis_space) if (diis_space and diis_space > 1) else None
-
-        for ic in range(1, max_cycle+1):
-            # Solve bands for current V_eff
-            for ik in range(self.nk):
-                self._iterate_bands(ik, v_eff, with_k, nsweeps=band_nsweeps, step=band_step, prec_kappa=band_prec_kappa)
-
-            # New density and potential
-            rho_new = self.get_density_R()
-            vH_new = self.get_vhartree_R(rho_new)
-            v_eff_new = self._vne_R + vH_new
-
-            # Energies
-            eterms = self.energy_terms(v_eff_R=v_eff_new, rho_R=rho_new, vH_R=vH_new, with_k=with_k)
-            e_tot = eterms['E_tot']
-
-            # Convergence metrics
-            drho = rho_new - rho
-            norm_drho = np.sqrt(self.grid_weight * float(np.dot(drho, drho)))
-            de = np.inf if e_prev is None else abs(e_tot - e_prev)
-            msg1 = f" KPWSCF iter {ic:3d}  E_tot = {e_tot:.12f}  dE = {de:.3e}  ||dρ|| = {norm_drho:.3e}"
-            msg2 = (
-                f"   components: E_T={eterms['E_T']:.8f}  E_ne={eterms['E_ne']:.8f}  E_H={eterms['E_H']:.8f}" +
-                (('' if not with_k else f"  E_x={eterms['E_x']:.8f}"))
-            )
-            log_iter(msg1)
-            log_iter(msg2)
-            # Orthonormality diagnostics
-            ortho = self._ortho_metrics()
-            msg_ortho = (f"   ortho: R diag-dev={ortho['max_diag_dev_r']:.2e} offdiag={ortho['max_offdiag_r']:.2e}; "
-                      f"G diag-dev={ortho['max_diag_dev_g']:.2e} offdiag={ortho['max_offdiag_g']:.2e}")
-            log_iter(msg_ortho)
-            if trace:
-                print(msg1)
-                print(msg2)
-                print(msg_ortho)
-
-            if (de < conv_tol) and (norm_drho < conv_tol_rho):
-                return e_tot, True
-
-            # Preconditioned residual (Kerker)
-            res_p = self._kerker(drho, k_screen=kerker_k)
-            norm_res_p = np.sqrt(self.grid_weight * float(np.dot(res_p, res_p)))
-            msg3 = f"   residual: ||dρ||_precond = {norm_res_p:.3e} (alpha={alpha:.2f}, kerker_k={kerker_k:.2f})"
-            log_iter(msg3)
-            if trace:
-                print(msg3)
-            # Update density with DIIS or linear mixing
-            if (diis is not None) and (ic >= diis_start_cycle):
-                diis.push(rho, res_p)
-                try:
-                    rho = diis.extrapolate(self.grid_weight)
-                except Exception:
-                    # Fallback to linear mixing if DIIS fails
-                    rho = rho + alpha * res_p
+        
+        logger.info(self, '\n')
+        logger.info(self, '******** %s SCF (plane-wave basis) ********', 
+                    'HF' if with_k else 'Hartree-only')
+        logger.info(self, 'nk = %d, mesh = %s, nband = %d, nocc = %d',
+                    self.nk, self.mesh, self.nband, self.nocc)
+        logger.info(self, 'Davidson tol = %.2e, max_cycle = %d', davidson_tol, davidson_max_cycle)
+        logger.info(self, 'SCF conv_tol = %.2e, conv_tol_rho = %.2e', conv_tol, conv_tol_rho)
+        
+        # Allocate storage for energies
+        self.mo_energy = np.zeros((self.nk, self.nband), dtype=float)
+        
+        # SCF loop
+        e_tot_prev = 0.0
+        rho_r_prev = None
+        converged = False
+        
+        for scf_iter in range(1, max_cycle + 1):
+            logger.info(self, '\n--- SCF Iteration %d ---', scf_iter)
+            
+            # 1. Compute current density in real space
+            rho_r = self.get_density_r()
+            
+            # 2. Check density convergence
+            logger.debug(self, "checking density convergence...")
+            if rho_r_prev is not None:
+                drho = rho_r - rho_r_prev
+                rho_norm = np.linalg.norm(drho) * np.sqrt(self.grid_weight)
+                logger.info(self, '  Density change: %.6e', rho_norm)
             else:
-                rho = rho + alpha * res_p
-            # Rebuild potentials
-            vH = self.get_vhartree_R(rho)
-            v_eff = self._vne_R + vH
-            e_prev = e_tot
+                rho_norm = 1.0
+            
+            # 3. Mix density (simple linear mixing)
+            if scf_iter > 1:
+                rho_r = alpha * rho_r + (1.0 - alpha) * rho_r_prev
+            
+            # 4. Diagonalize Hamiltonian at each k-point using custom SCF-aware Davidson
+            for ik in range(self.nk):
+                logger.info(self, '  k-point %d/%d: Diagonalizing H with SCF-Davidson...', ik + 1, self.nk)
+                
+                # Initial guess from current wavefunctions
+                psi_g_init = self.psi_g[ik].copy()
+                
+                # Custom Davidson with density updates
+                conv, e, psi_g_new = self._scf_davidson(
+                    ik, psi_g_init,
+                    with_k=with_k,
+                    tol=davidson_tol,
+                    max_cycle=davidson_max_cycle
+                )
+                
+                # Update wavefunctions and energies
+                for n in range(self.nband):
+                    psi_g_n = psi_g_new[n]
+                    
+                    # Check normalization (should be ~1)
+                    norm_g_check = np.sqrt(np.sum(np.abs(psi_g_n)**2))
+                    logger.debug(self, "k-point %d band %d: L2 norm(psi_g) = %.6e",
+                                 ik, n, norm_g_check)
 
-        return e_tot, False
-
-    # ----------------------------- solve (one-shot) ----------------------------- #
-    def diagonalize_hcore(self):
-        """Diagonalize H_core per k using Rayleigh–Ritz in the ψ subspace.
-
-        On return, updates self.psi_r, self.psi_g, and self.mo_energy.
-        """
-        nk, nb = self.nk, self.nband
-        mo_energy = np.zeros((nk, nb), dtype=float)
-        for ik in range(nk):
-            psi = self.psi_r[ik]               # (nb, ngr)
-            Hpsi = self._apply_hcore(ik, psi)  # (nb, ngr)
-            # Subspace Hamiltonian: H_sub = <ψ|H|ψ>
-            # Use weighted inner product with grid_weight
-            Hsub = (psi.conj() @ Hpsi.T) * self.grid_weight  # (nb, nb)
-            Hsub = (Hsub + Hsub.conj().T) * 0.5  # Hermitize
-            eig, U = np.linalg.eigh(Hsub)
-            idx = np.argsort(eig)
-            eig = eig[idx]
-            U = U[:, idx]
-            # Rotate ψ within subspace; re-orthonormalize for numerical safety
-            psi_new = (U.conj().T @ psi)  # (nb, ngr)
-            psi_new = self._orthonormalize_block(psi_new)
-            self.psi_r[ik] = psi_new
-            self.psi_g[ik] = self._fft_r2g(psi_new)
-            mo_energy[ik] = eig
-        self.mo_energy = mo_energy
-        return mo_energy
-
-    def band_energy(self):
-        """Return current band energies (nk, nband)."""
-        return np.array(self.mo_energy, copy=True)
-
-    def get_e_tot_one_electron(self):
-        """Total one-electron energy sum_k Σ_occ ε_{k,n} (no double counting)."""
-        if self.mo_energy is None:
-            self.diagonalize_hcore()
-        nk = self.nk
-        occ = np.zeros((nk, self.nband))
-        occ[:, :self.nocc] = 2.0 / nk  # equal k-point weights for closed shell
-        return float((self.mo_energy * occ).sum())
-
-    # Convenience driver for this step
-    def kernel(self, init='random', **kwargs):
-        """Build operators, initialize ψ, diagonalize H_core, return E (one-electron)."""
-        self.build()
-        self.init_guess(kind=init)
-        self.diagonalize_hcore()
-        etot = self.get_e_tot_one_electron()
-        logger.note(self, 'KPWSCF (T+V_ne) one-electron energy = %.12f', etot)
-        return etot
+                    psi_r_n = self._ifft_g2r(psi_g_n)
+                    
+                    # For verification: R-space integral should also be ~1
+                    norm_r_integral = np.sqrt(np.sum(np.abs(psi_r_n)**2))
+                    logger.debug(self, "k-point %d band %d: R-space integral = %.6e",
+                                 ik, n, norm_r_integral)
+                    
+                    # Store both representations
+                    self.psi_r[ik, n] = psi_r_n
+                    self.psi_g[ik, n] = psi_g_n
+                    self.mo_energy[ik, n] = np.real(e[n])
+                
+                logger.info(self, '    Converged: %s', conv[:min(4, self.nband)])
+                logger.info(self, '    Lowest energies: %s', 
+                            self.mo_energy[ik, :min(4, self.nband)])
+                    
+            
+            # 5. Compute total energy using efficient method
+            energy_dict = self.compute_energy_components(with_k=with_k)
+            e_tot = energy_dict['E_tot']
+            E_kin = energy_dict['E_kin']
+            E_ne = energy_dict['E_ne']
+            E_hartree = energy_dict['E_hartree']
+            E_exchange = energy_dict['E_exchange']
+            E_nuc = energy_dict['E_nuc']
+            
+            # 6. Check energy convergence
+            de = e_tot - e_tot_prev
+            logger.info(self, '  Cycle %3d: E = %16.10f  dE = %+.6e  |dρ| = %.6e',
+                        scf_iter, e_tot, de, rho_norm)
+            if self.verbose >= logger.DEBUG:
+                logger.debug(self, '    E_kin = %.10f', E_kin)
+                logger.debug(self, '    E_ne = %.10f', E_ne)
+                logger.debug(self, '    E_hartree = %.10f', E_hartree)
+                logger.debug(self, '    E_exchange = %.10f', E_exchange)
+                logger.debug(self, '    E_nuc = %.10f', E_nuc)
+            
+            # 7. Convergence check
+            if scf_iter > 1 and abs(de) < conv_tol and rho_norm < conv_tol_rho:
+                converged = True
+                logger.info(self, '\n*** SCF Converged! ***')
+                logger.info(self, 'E(HF) = %.10f Ha', e_tot)
+                break
+            
+            # Update for next iteration
+            e_tot_prev = e_tot
+            rho_r_prev = rho_r.copy()
+        
+        if not converged:
+            logger.warn(self, '\n*** SCF NOT converged after %d iterations ***', max_cycle)
+        
+        # Print final summary
+        logger.info(self, '\n' + '=' * 60)
+        logger.info(self, 'Final Results:')
+        logger.info(self, '  Total Energy: %.10f Ha', e_tot)
+        logger.info(self, '  Converged: %s', converged)
+        for ik in range(self.nk):
+            logger.info(self, '  k-point %d orbital energies (occupied):', ik)
+            logger.info(self, '    %s', self.mo_energy[ik, :self.nocc])
+        logger.info(self, '=' * 60)
+        
+        return e_tot, converged
 
 
 __all__ = ['KPWSCF']
+
 
