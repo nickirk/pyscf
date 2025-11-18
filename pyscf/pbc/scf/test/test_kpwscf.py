@@ -402,17 +402,46 @@ class TestSCFKernel(unittest.TestCase):
         cell_test.atom = 'H 0 0 0; H 0.74 0 0'
         cell_test.basis = 'cc-pvtz'
         #cell_test.pseudo = 'gth-pade'
-        cell_test.a = np.eye(3) * 20.0
-        cell_test.mesh = [64, 64, 64]
+        cell_test.a = np.eye(3) * 10.0
+        cell_test.mesh = [32, 32, 32]
         cell_test.verbose = 5
         cell_test.build()
 
         # compute pbc hf for He as reference
-        #from pyscf.pbc.scf import RHF
-        #mf_ref = RHF(cell_test, exxdiv='ewald').density_fit()
-        #mf_ref.verbose = 5
-        #e_ref = mf_ref.kernel()
+        from pyscf.pbc.scf import RHF
+        mf_ref = RHF(cell_test, exxdiv='ewald').density_fit()
+        mf_ref.verbose = 5
+        e_ref = mf_ref.kernel()
         
+        # Compute energy components
+        # Note: PySCF uses E_tot = E_hcore + 0.5*Tr(dm @ vhf) + E_nuc
+        # where vhf = vj - 0.5*vk for RHF
+        # Expanding: E_tot = E_hcore + 0.5*Tr(dm @ vj) - 0.25*Tr(dm @ vk) + E_nuc
+        #                  = E_kin + E_ne + 0.5*E_j - 0.25*E_k + E_nuc
+        # The vk from get_jk includes the Ewald Madelung correction when exxdiv='ewald'
+        dm = mf_ref.make_rdm1()
+        h1e = mf_ref.get_hcore()
+        vj, vk = mf_ref.get_jk(dm)  # vk includes Madelung correction
+        
+        # Energy formula for comparison with KPWSCF
+        E_kin = np.einsum('ij,ji', dm, mf_ref.cell.pbc_intor('int1e_kin')).real
+        E_hcore = np.einsum('ij,ji', dm, h1e).real
+        E_ne = E_hcore - E_kin  # h1e = T + V_ne
+        E_hartree = 0.5 * np.einsum('ij,ji', dm, vj).real
+        E_exchange = -0.25 * np.einsum('ij,ji', dm, vk).real  # NOTE: 0.25 factor!
+        E_nuc = cell_test.energy_nuc()
+        
+        # Verify the energy formula
+        E_tot_check = E_kin + E_ne + E_hartree + E_exchange + E_nuc
+
+        print("Reference total energy (SCF): ", e_ref)
+        print("Reference total energy (computed): ", E_tot_check)
+        print("Reference Kinetic energy: ", E_kin)
+        print("Reference Nuclear attraction energy: ", E_ne)
+        print("Reference Hartree energy: ", E_hartree)
+        print("Reference Exchange energy: ", E_exchange)
+        print("Reference Nuclear repulsion: ", E_nuc)
+
         mf_test = KPWSCF(cell_test, kpts=np.zeros((1, 3)), nband=4)
         mf_test.verbose = 5
         
@@ -445,6 +474,160 @@ class TestSCFKernel(unittest.TestCase):
         self.assertEqual(hdiag.shape, (mf_test.ngrids,))
         # All diagonal elements should be positive (kinetic energy)
         self.assertTrue(np.all(hdiag >= 0))
+
+
+class TestInitGuess(unittest.TestCase):
+    """Test different initialization methods."""
+    
+    def test_init_guess_by_minao(self):
+        """Test initialization from minimal (ANO) basis."""
+        # Small cell for fast test
+        cell_test = pbcgto.Cell()
+        cell_test.atom = 'He 0 0 0; He 1.5 0 0'
+        cell_test.basis = 'sto-3g'
+        cell_test.a = np.eye(3) * 5.0
+        cell_test.mesh = [16, 16, 16]
+        cell_test.verbose = 0
+        cell_test.build()
+        
+        mf_test = KPWSCF(cell_test, kpts=np.zeros((1, 3)), nband=4)
+        mf_test.verbose = 0
+        mf_test.build()
+        mf_test.init_guess_by_minao(seed=42)
+        
+        # Check that wavefunctions are initialized
+        self.assertIsNotNone(mf_test.psi_r)
+        self.assertIsNotNone(mf_test.psi_g)
+        self.assertEqual(mf_test.psi_r.shape, (1, 4, mf_test.ngrids))
+        self.assertEqual(mf_test.psi_g.shape, (1, 4, mf_test.ngrids))
+        
+        # Check normalization for all bands
+        for n in range(mf_test.nband):
+            # R-space normalization: ∫|ψ_r|²dr = 1
+            norm_r = np.sqrt(np.sum(np.abs(mf_test.psi_r[0, n])**2) * mf_test.grid_weight)
+            self.assertAlmostEqual(norm_r, 1.0, places=5,
+                                   msg=f'Band {n} R-space norm = {norm_r}')
+            
+            # G-space normalization: Σ|ψ_g|² = 1
+            norm_g = np.sqrt(np.sum(np.abs(mf_test.psi_g[0, n])**2))
+            self.assertAlmostEqual(norm_g, 1.0, places=5,
+                                   msg=f'Band {n} G-space norm = {norm_g}')
+        
+        # Check that occupied orbitals are different from random
+        # (they should have structure from atomic orbitals)
+        psi_r_0 = mf_test.psi_r[0, 0]
+        psi_r_1 = mf_test.psi_r[0, 1]
+        # Orbitals should be different
+        self.assertFalse(np.allclose(psi_r_0, psi_r_1))
+        
+        # Compute initial energy (should be reasonable)
+        energy_dict = mf_test.compute_energy_components(with_k=False)
+        self.assertTrue(np.isfinite(energy_dict['E_tot']))
+        self.assertLess(energy_dict['E_tot'], 0)  # Should be negative for bound system
+    
+    def test_init_guess_by_atom(self):
+        """Test initialization from atomic HF."""
+        # Small cell for fast test
+        cell_test = pbcgto.Cell()
+        cell_test.atom = 'He 0 0 0; He 1.5 0 0'
+        cell_test.basis = 'sto-3g'
+        cell_test.a = np.eye(3) * 5.0
+        cell_test.mesh = [16, 16, 16]
+        cell_test.verbose = 0
+        cell_test.build()
+        
+        mf_test = KPWSCF(cell_test, kpts=np.zeros((1, 3)), nband=4)
+        mf_test.verbose = 0
+        mf_test.build()
+        mf_test.init_guess_by_atom(seed=42)
+        
+        # Check that wavefunctions are initialized
+        self.assertIsNotNone(mf_test.psi_r)
+        self.assertIsNotNone(mf_test.psi_g)
+        self.assertEqual(mf_test.psi_r.shape, (1, 4, mf_test.ngrids))
+        self.assertEqual(mf_test.psi_g.shape, (1, 4, mf_test.ngrids))
+        
+        # Check normalization for all bands
+        for n in range(mf_test.nband):
+            # R-space normalization: ∫|ψ_r|²dr = 1
+            norm_r = np.sqrt(np.sum(np.abs(mf_test.psi_r[0, n])**2) * mf_test.grid_weight)
+            self.assertAlmostEqual(norm_r, 1.0, places=5,
+                                   msg=f'Band {n} R-space norm = {norm_r}')
+            
+            # G-space normalization: Σ|ψ_g|² = 1
+            norm_g = np.sqrt(np.sum(np.abs(mf_test.psi_g[0, n])**2))
+            self.assertAlmostEqual(norm_g, 1.0, places=5,
+                                   msg=f'Band {n} G-space norm = {norm_g}')
+        
+        # Compute initial energy (should be reasonable)
+        energy_dict = mf_test.compute_energy_components(with_k=False)
+        self.assertTrue(np.isfinite(energy_dict['E_tot']))
+        self.assertLess(energy_dict['E_tot'], 0)  # Should be negative for bound system
+    
+    def test_init_guess_comparison(self):
+        """Compare minao and atom initialization methods."""
+        # Small cell for fast test
+        cell_test = pbcgto.Cell()
+        cell_test.atom = 'He 0 0 0; He 1.5 0 0'
+        cell_test.basis = 'sto-3g'
+        cell_test.a = np.eye(3) * 5.0
+        cell_test.mesh = [16, 16, 16]
+        cell_test.verbose = 0
+        cell_test.build()
+        
+        # Initialize with minao
+        mf_minao = KPWSCF(cell_test, kpts=np.zeros((1, 3)), nband=4)
+        mf_minao.verbose = 0
+        mf_minao.build()
+        mf_minao.init_guess_by_minao(seed=42)
+        E_minao = mf_minao.compute_energy_components(with_k=False)['E_tot']
+        
+        # Initialize with atom
+        mf_atom = KPWSCF(cell_test, kpts=np.zeros((1, 3)), nband=4)
+        mf_atom.verbose = 0
+        mf_atom.build()
+        mf_atom.init_guess_by_atom(seed=42)
+        E_atom = mf_atom.compute_energy_components(with_k=False)['E_tot']
+        
+        # Both should give reasonable (negative, finite) energies
+        self.assertTrue(np.isfinite(E_minao))
+        self.assertTrue(np.isfinite(E_atom))
+        self.assertLess(E_minao, 0)
+        self.assertLess(E_atom, 0)
+        
+        # They should be different but within reasonable range
+        # (both are projections of atomic states)
+        self.assertNotAlmostEqual(E_minao, E_atom, places=3)
+        # But should be of similar magnitude (order of Hartrees)
+        self.assertLess(abs(E_minao - E_atom), 100)  # Very loose bound
+    
+    def test_init_guess_with_scf(self):
+        """Test that init_guess methods work with SCF kernel."""
+        # Very small system for quick test
+        cell_test = pbcgto.Cell()
+        cell_test.atom = 'He 0 0 0'
+        cell_test.basis = 'sto-3g'
+        cell_test.a = np.eye(3) * 5.0
+        cell_test.mesh = [12, 12, 12]
+        cell_test.verbose = 0
+        cell_test.build()
+        
+        # Test with minao initialization
+        mf_test = KPWSCF(cell_test, kpts=np.zeros((1, 3)), nband=2)
+        mf_test.verbose = 0
+        
+        # Run a few SCF iterations
+        e_tot, converged = mf_test.kernel(
+            init='minao',
+            max_cycle=3,  # Just a few iterations to test it works
+            with_k=False,  # Hartree only for speed
+            conv_tol=1e-4,
+            davidson_max_cycle=5
+        )
+        
+        # Check that energy is finite and reasonable
+        self.assertTrue(np.isfinite(e_tot))
+        self.assertLess(e_tot, 0)
 
 
 if __name__ == '__main__':
