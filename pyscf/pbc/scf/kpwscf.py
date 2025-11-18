@@ -54,6 +54,10 @@ class KPWSCF(lib.StreamObject):
             # Heuristic: filled + 20% extra, at least 1
             nocc = max(1, int(np.ceil(nelec/2)))
             nband = max(nocc, int(np.ceil(nocc * 1.2)))
+        elif nband < nelec // 2:
+            logger.warn(self, f'Number of bands nband={nband} is less than number of occupied orbitals {nelec/2}')
+            nband = int(np.ceil(nelec // 2 * 1.2))
+
         self.nband = int(nband)
         self.nocc = min(int(np.ceil(nelec/2)), self.nband)
 
@@ -430,13 +434,13 @@ class KPWSCF(lib.StreamObject):
             # Fill bands from projected AO orbitals
             for n in range(n_fill):
                 psi_r_n = mo_on_grid[:, n].copy()
-                self._normalize_and_store_orbital_r(psi_r_n, ik, n, log)
+                self._normalize_and_store_orbital_r(psi_r_n, ik, n)
         
         # Fill remaining virtual bands with random orbitals
-        self._fill_random_virtual_orbitals(n_fill, rng, log)
+        self._fill_random_virtual_orbitals(n_fill, rng)
         
         log.info('  Initialization complete')
-        self._log_normalization_check(log)
+        self._log_normalization_check()
         return self
 
     def init_guess_from_mo_coeff(self, mo_coeff, mo_occ=None, seed=1):
@@ -876,8 +880,8 @@ class KPWSCF(lib.StreamObject):
             # 6. Precondition residuals and expand subspace
             hdiag = self._kin_diag[ik]
             for n in range(self.nband):
-                shift = 0.1
-                precond_denom = hdiag - (e_sorted[n] - shift)
+                shift = 0.01
+                precond_denom = hdiag - (e_sorted[n] + shift)
                 precond_denom[np.abs(precond_denom) < 1e-8] = 1e-8
                 P_n = residuals[n] / precond_denom
                 

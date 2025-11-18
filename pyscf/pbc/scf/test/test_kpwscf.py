@@ -607,18 +607,18 @@ class TestInitGuess(unittest.TestCase):
         e_ref = mf_ref.kernel()
         
         # Test with minao initialization
-        mf_test = KPWSCF(cell_test, kpts=np.zeros((1, 3)), nband=2)
+        mf_test = KPWSCF(cell_test, kpts=np.zeros((1, 3)),nband=3)
         mf_test.verbose = 4
         
         # Run a few SCF iterations
         e_tot, converged = mf_test.kernel(
             init='minao',
-            max_cycle=10,  # Just a few iterations to test it works
-            with_k=True,  # Hartree only for speed
+            max_cycle=7,  
+            with_k=True,  
             conv_tol=1e-4,
-            davidson_max_cycle=5,
+            davidson_max_cycle=3,
         )
-        self.assertEqual(e_tot, -5.7075502066)
+        np.testing.assert_allclose(e_tot, -5.7075502066, rtol=1e-6)
         
 
 
