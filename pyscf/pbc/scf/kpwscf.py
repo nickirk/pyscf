@@ -523,7 +523,7 @@ class KPWSCF(lib.StreamObject):
                 mo_to_use = mo_k[:, :n_fill]
             
             n_fill_min = min(n_fill_min, n_fill)
-            logger.debug('  K-point %d: using %d MOs from provided coefficients', ik, n_fill)
+            logger.debug(self, '  K-point %d: using %d MOs from provided coefficients', ik, n_fill)
             
             # Evaluate AOs at k-point on grid and transform to MOs
             ao_value = numint.eval_ao(self.cell, coords, kpt=kpt, deriv=0)
@@ -977,7 +977,7 @@ class KPWSCF(lib.StreamObject):
 
     # ----------------------------- Solvers ----------------------------- #
     def _block_davidson(self, ik, with_k=True, max_cycle=5, tol=1e-6, 
-                        scf_iter=1):
+                        scf_iter=1, rho_r=None):
         """Block Davidson diagonalization for all nband orbitals at once.
         
         Solves the eigenvalue problem for the Fock operator in a subspace of
@@ -988,6 +988,7 @@ class KPWSCF(lib.StreamObject):
             with_k: whether to include exchange operator
             max_cycle: maximum Davidson iterations
             scf_iter: current SCF iteration (for logging)
+            rho_r: electron density in real space (optional, computed if not provided)
             
         Returns:
             (psi_new, e_sorted) where:
@@ -1014,7 +1015,7 @@ class KPWSCF(lib.StreamObject):
             # 2. Build subspace Hamiltonian: H_ij = ⟨v_i|F|v_j⟩
             H_subspace = np.zeros((nv, nv), dtype=complex)
             for i in range(nv):
-                F_vi = self.apply_fock(ik, subspace[i], with_j=True, with_k=with_k)
+                F_vi = self.apply_fock(ik, subspace[i], rho_r=rho_r, with_j=True, with_k=with_k)
                 for j in range(nv):
                     H_subspace[j, i] = np.vdot(subspace[j], F_vi)
             
@@ -1037,7 +1038,7 @@ class KPWSCF(lib.StreamObject):
             residuals = []
             max_res_norm = 0.0
             for n in range(self.nband):
-                F_psi_n = self.apply_fock(ik, psi_new[n], with_j=True, with_k=with_k)
+                F_psi_n = self.apply_fock(ik, psi_new[n], rho_r=rho_r, with_j=True, with_k=with_k)
                 R_n = F_psi_n - e_sorted[n] * psi_new[n]
                 res_norm = np.sqrt(np.sum(np.abs(R_n)**2))
                 max_res_norm = max(max_res_norm, res_norm)
@@ -1053,7 +1054,7 @@ class KPWSCF(lib.StreamObject):
             # 6. Precondition residuals and expand subspace
             hdiag = self._kin_diag[ik]
             for n in range(self.nband):
-                shift = 0.0001
+                shift = 0.001
                 precond_denom = hdiag - (e_sorted[n] + shift)
                 precond_denom[np.abs(precond_denom) < 1e-8] = 1e-8
                 P_n = residuals[n] / precond_denom
@@ -1074,7 +1075,8 @@ class KPWSCF(lib.StreamObject):
     
 
     def kernel(self, init='minao', max_cycle=50, conv_tol=1e-7, conv_tol_rho=1e-6,
-               with_k=True, davidson_tol=1e-6, davidson_max_cycle=5, mo_coeff=None, mo_occ=None
+               with_k=True, davidson_tol=1e-6, davidson_max_cycle=5, mo_coeff=None, mo_occ=None,
+               alpha=0.5
                ):
         """Self-consistent HF loop in G-space (J and optional K); no XC.
         
@@ -1090,6 +1092,8 @@ class KPWSCF(lib.StreamObject):
             davidson_max_cycle: max Davidson iterations per SCF cycle
             mo_coeff: MO coefficients for initialization (optional)
             mo_occ: MO occupations for initialization (optional)
+            alpha: density mixing parameter (0 < alpha <= 1). Smaller = more stable, larger = faster.
+                   rho_new = alpha * rho_computed + (1-alpha) * rho_old
             
         Returns:
             (E_tot, converged) tuple
@@ -1141,13 +1145,22 @@ class KPWSCF(lib.StreamObject):
         # SCF loop
         e_tot_prev = 0.0
         rho_r_prev = None
+        rho_r_mixed = None  # For density mixing
         converged = False
         
         for scf_iter in range(1, max_cycle + 1):
-            rho_r = self.get_density_r()
+            # Get density from current orbitals
+            rho_r_computed = self.get_density_r()
             
+            # Apply density mixing (except first iteration)
+            if rho_r_prev is not None and alpha < 1.0:
+                rho_r = alpha * rho_r_computed + (1.0 - alpha) * rho_r_prev
+            else:
+                rho_r = rho_r_computed
+            
+            # Compute density change for convergence check
             if rho_r_prev is not None:
-                drho = rho_r - rho_r_prev
+                drho = rho_r_computed - rho_r_prev
                 rho_norm = np.linalg.norm(drho) * np.sqrt(self.grid_weight)
             else:
                 rho_norm = 1.0
@@ -1161,7 +1174,8 @@ class KPWSCF(lib.StreamObject):
                     with_k=with_k,
                     max_cycle=davidson_max_cycle,
                     tol=davidson_tol,
-                    scf_iter=scf_iter
+                    scf_iter=scf_iter,
+                    rho_r=rho_r
                 )
                 
                 # Update wavefunctions and energies
@@ -1201,7 +1215,7 @@ class KPWSCF(lib.StreamObject):
             
             # Update for next iteration
             e_tot_prev = e_tot
-            rho_r_prev = rho_r.copy()
+            rho_r_prev = rho_r_computed.copy()  # Save the computed density (before mixing)
         
         if not converged:
             logger.warn(self, '\n*** SCF NOT converged after %d iterations ***', max_cycle)
