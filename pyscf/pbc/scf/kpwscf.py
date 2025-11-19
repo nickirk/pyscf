@@ -119,32 +119,49 @@ class KPWSCF(lib.StreamObject):
             self.grids.build()
 
     
-    def _fft_r2g(self, psi_r_block):
+    def _fft_r2g(self, psi_r_block, kpt=None):
         """FFT from real-space to G-space with consistent normalization.
+        
+        For Bloch waves ψ(r) = e^(ik·r) u(r), demodulates before FFT.
         
         Convention:
         - R-space: ∫|ψ_r|²dr = Σ|ψ_r|² × (V/N) = 1
         - G-space: Σ|ψ_g|² = 1
         
-        Numpy FFT Parseval: Σ|ψ_r|² = (1/N) Σ|FFT(ψ_r)|²
+        Args:
+            psi_r_block: (nband, ngrids) or (ngrids,) complex wavefunction in real space
+            kpt: (3,) k-vector. If provided, demodulates e^(ik·r) before FFT
         
-        Given Σ|ψ_r|² = N/V, we have Σ|FFT(ψ_r)|² = N²/V
-        To normalize to Σ|ψ_g|² = 1, scale by: 1/√(N²/V) = √(V)/N
-        
-        psi_r_block: (nband, ngrids) or (ngrids,)
         Returns: (nband, ngrids) or (ngrids,) complex in G-space
         """
-        if psi_r_block.ndim == 1:
-            psi_r_2d = psi_r_block.reshape(1, -1)
-            psi_g_2d = pbctools.fft(psi_r_2d, self.mesh)
-            psi_g_2d *= np.sqrt(self.vol) / self.ngrids
-            return psi_g_2d[0]
+        if kpt is not None and np.linalg.norm(kpt) > 1e-9:
+            # For k≠0, demodulate e^(ik·r) before FFT
+            coords = self.grids.coords
+            phase = np.exp(-1j * np.dot(coords, kpt))  # e^(-ik·r)
+            
+            if psi_r_block.ndim == 1:
+                psi_r_2d = (psi_r_block * phase).reshape(1, -1)
+                psi_g_2d = pbctools.fft(psi_r_2d, self.mesh)
+                psi_g_2d *= np.sqrt(self.vol) / self.ngrids
+                return psi_g_2d[0]
+            else:
+                psi_r_demod = psi_r_block * phase[None, :]
+                psi_g = pbctools.fft(psi_r_demod, self.mesh)
+                psi_g *= np.sqrt(self.vol) / self.ngrids
+                return psi_g
         else:
-            psi_g = pbctools.fft(psi_r_block, self.mesh)
-            psi_g *= np.sqrt(self.vol) / self.ngrids
-            return psi_g
+            # k=0 (Gamma point), use regular FFT
+            if psi_r_block.ndim == 1:
+                psi_r_2d = psi_r_block.reshape(1, -1)
+                psi_g_2d = pbctools.fft(psi_r_2d, self.mesh)
+                psi_g_2d *= np.sqrt(self.vol) / self.ngrids
+                return psi_g_2d[0]
+            else:
+                psi_g = pbctools.fft(psi_r_block, self.mesh)
+                psi_g *= np.sqrt(self.vol) / self.ngrids
+                return psi_g
 
-    def _fft_density_r2g(self, rho_r):
+    def _fft_density_r2g(self, rho_r, kpt=None):
         """FFT density from real-space to G-space.
         
         For density ρ(r), we want ρ(G) = ∫ ρ(r) e^{-iG·r} dr
@@ -153,45 +170,70 @@ class KPWSCF(lib.StreamObject):
         
         Args:
             rho_r: density in real space (ngrids,) or shaped for mesh
+            kpt: k-vector for phase demodulation (if density has e^{ik·r} phase)
         Returns:
             rho_g: density in G-space (ngrids,)
         """
-        if rho_r.ndim == 1:
-            rho_r_2d = rho_r.reshape(1, -1)
+        # Apply phase if needed (don't modify input!)
+        if kpt is not None:
+            kpt = np.asarray(kpt, dtype=float)
+            phase = np.exp(-1j * np.dot(self.grids.coords, kpt))
+            rho_r_work = rho_r * phase
+        else:
+            rho_r_work = rho_r
+        
+        if rho_r_work.ndim == 1:
+            rho_r_2d = rho_r_work.reshape(1, -1)
             rho_g_2d = pbctools.fft(rho_r_2d, self.mesh)
             rho_g_2d *= (self.vol / self.ngrids)
             return rho_g_2d[0]
         else:
-            rho_g = pbctools.fft(rho_r, self.mesh)
+            rho_g = pbctools.fft(rho_r_work, self.mesh)
             rho_g *= (self.vol / self.ngrids)
             return rho_g
 
-    def _ifft_g2r(self, psi_g_block):
+    def _ifft_g2r(self, psi_g_block, kpt=None):
         """IFFT from G-space to real-space with consistent normalization.
+        
+        For Bloch waves, remodulates with e^(ik·r) after IFFT to get full Bloch wave.
         
         Convention:
         - G-space: Σ|ψ_g|² = 1
         - R-space: ∫|ψ_r|²dr = Σ|ψ_r|² × (V/N) = 1
         
-        Numpy IFFT Parseval: Σ|IFFT(ψ_g)|² = (1/N) Σ|ψ_g|²
+        Args:
+            psi_g_block: (nband, ngrids) or (ngrids,) complex in G-space
+            kpt: (3,) k-vector. If provided, remodulates with e^(ik·r) after IFFT
         
-        Given Σ|ψ_g|² = 1, we have Σ|IFFT(ψ_g)|² = 1/N
-        To get Σ|ψ_r|² = N/V, scale by: √((N/V)/(1/N)) = √(N²/V) = N/√V
-        
-        psi_g_block: (nband, ngrids) or (ngrids,)
-        Returns: (nband, ngrids) or (ngrids,) complex in real-space
+        Returns: (nband, ngrids) or (ngrids,) complex Bloch wave in real-space
         """
-        if psi_g_block.ndim == 1:
-            psi_g_2d = psi_g_block.reshape(1, -1)
-            psi_r_2d = pbctools.ifft(psi_g_2d, self.mesh)
-            psi_r_2d *= self.ngrids / np.sqrt(self.vol)
-            return psi_r_2d[0]
+        if kpt is not None and np.linalg.norm(kpt) > 1e-9:
+            # For k≠0, remodulate with e^(ik·r) after IFFT
+            coords = self.grids.coords
+            phase = np.exp(1j * np.dot(coords, kpt))  # e^(ik·r)
+            
+            if psi_g_block.ndim == 1:
+                psi_g_2d = psi_g_block.reshape(1, -1)
+                psi_r_2d = pbctools.ifft(psi_g_2d, self.mesh)
+                psi_r_2d *= self.ngrids / np.sqrt(self.vol)
+                return (psi_r_2d[0] * phase)
+            else:
+                psi_r = pbctools.ifft(psi_g_block, self.mesh)
+                psi_r *= self.ngrids / np.sqrt(self.vol)
+                return psi_r * phase[None, :]
         else:
-            psi_r = pbctools.ifft(psi_g_block, self.mesh)
-            psi_r *= self.ngrids / np.sqrt(self.vol)
-            return psi_r
+            # k=0 (Gamma point), use regular IFFT
+            if psi_g_block.ndim == 1:
+                psi_g_2d = psi_g_block.reshape(1, -1)
+                psi_r_2d = pbctools.ifft(psi_g_2d, self.mesh)
+                psi_r_2d *= self.ngrids / np.sqrt(self.vol)
+                return psi_r_2d[0]
+            else:
+                psi_r = pbctools.ifft(psi_g_block, self.mesh)
+                psi_r *= self.ngrids / np.sqrt(self.vol)
+                return psi_r
 
-    def _ifft_potential_g2r(self, V_g):
+    def _ifft_potential_g2r(self, V_g, kpt=None):
         """IFFT potential from G-space to real-space.
         
         For potential V(r), inverse FT is: V(r) = (1/V) Σ_G V(G) e^{iG·r}
@@ -203,15 +245,19 @@ class KPWSCF(lib.StreamObject):
         Returns:
             V_r: potential in real-space (ngrids,)
         """
+        phase = 1
+        if kpt is not None:
+            kpt = np.asarray(kpt, dtype=float)
+            phase = np.exp(1j * np.dot(self.grids.coords, kpt))
         if V_g.ndim == 1:
             V_g_2d = V_g.reshape(1, -1)
             V_r_2d = pbctools.ifft(V_g_2d, self.mesh)
             V_r_2d *= (self.ngrids / self.vol)
-            return V_r_2d[0]
+            return V_r_2d[0] * phase
         else:
             V_r = pbctools.ifft(V_g, self.mesh)
             V_r *= (self.ngrids / self.vol)
-            return V_r
+            return V_r * phase
 
     def build(self):
         """Sanity checks and operator precompute."""
@@ -225,14 +271,13 @@ class KPWSCF(lib.StreamObject):
         log.info('KPWSCF: nk=%d, mesh=%s (ngrids=%d), nband=%d (nocc=%d)'
                  , self.nk, self.mesh, self.ngrids, self.nband, self.nocc)
         # Log implied kinetic cutoff for visibility
-        try:
-            ke_from_mesh = pbctools.mesh_to_cutoff(self.cell.lattice_vectors(), np.asarray(self.mesh))
-            log.info('KPWSCF: implied kinetic cutoff (Eh) from mesh = %s (min=%.3f)',
-                     str(np.asarray(ke_from_mesh)), float(np.min(ke_from_mesh)))
-        except Exception:
-            pass
-        self._precompute_kinetic()
+        ke_from_mesh = pbctools.mesh_to_cutoff(self.cell.lattice_vectors(), np.asarray(self.mesh))
+        log.info('KPWSCF: implied kinetic cutoff (Eh) from mesh = %s (min=%.3f)',
+                 str(np.asarray(ke_from_mesh)), float(np.min(ke_from_mesh)))
+        
         self._build_vne()
+        self._precompute_kinetic()
+        
         return self
 
     def _precompute_kinetic(self):
@@ -317,7 +362,9 @@ class KPWSCF(lib.StreamObject):
         if norm_r_integral > 1e-10:
             psi_r_n /= norm_r_integral
             self.psi_r[ik, n] = psi_r_n
-            self.psi_g[ik, n] = self._fft_r2g(psi_r_n)
+            # Pass k-point when FFTing to handle Bloch wave phase
+            kpt = self.kpts[ik]
+            self.psi_g[ik, n] = self._fft_r2g(psi_r_n, kpt=kpt)
             return True
         else:
             logger.warn(self, 'Orbital %d at k-point %d has near-zero norm, skipping', n, ik)
@@ -630,9 +677,9 @@ class KPWSCF(lib.StreamObject):
         has_pseudo = hasattr(cell, '_pseudo') and cell._pseudo
         
         # 1. Apply local potential (nucleus + local PP if present)
-        psi_nk_r = self._ifft_g2r(psi_nk_g)
+        psi_nk_r = self._ifft_g2r(psi_nk_g, kpt=self.kpts[ik])
         vnuc_psi_r = self._vne_R * psi_nk_r  # self._vne_R includes both nuclear and local PP
-        vnuc_psi_g = self._fft_r2g(vnuc_psi_r)
+        vnuc_psi_g = self._fft_r2g(vnuc_psi_r, kpt=self.kpts[ik])
         
         # 2. Apply non-local pseudopotential (if present)
         if has_pseudo:
@@ -788,27 +835,21 @@ class KPWSCF(lib.StreamObject):
         vnuc_psi_g = self._apply_nuc(ik, psi_nk_g)
         F_psi_g += vnuc_psi_g
         
-        # Get density (use provided or compute from current state)
         if rho_r is None:
             rho_r = self.get_density_r()
         
-        # 3. Apply Hartree Potential J (electron-electron repulsion, direct term)
         if with_j:
-            # V_H(r) from total density
             rho_g = self._fft_density_r2g(rho_r)
             coulG = self._coulG0 if self._coulG0 is not None else pbctools.get_coulG(self.cell, mesh=self.mesh)
             vH_g = coulG * rho_g
             vH_r = self._ifft_potential_g2r(vH_g).real
-            psi_nk_r = self._ifft_g2r(psi_nk_g)
+            psi_nk_r = self._ifft_g2r(psi_nk_g, kpt=self.kpts[ik])
             vH_psi_r = vH_r * psi_nk_r
-            F_psi_g += self._fft_r2g(vH_psi_r)
+            F_psi_g += self._fft_r2g(vH_psi_r, kpt=self.kpts[ik])
         
-        # 4. Apply Exchange term: -K/2 (Fock operator has opposite sign and factor 1/2)
-        # Note: _apply_k returns K|ψ⟩ with negative values (attractive)
-        # For Fock: F = h + J - K_positive/2 = h + J + K_negative/2
         if with_k:
             K_psi_g = self._apply_k(ik, psi_nk_g)
-            F_psi_g += K_psi_g  # Factor of 0.5 for Fock operator
+            F_psi_g += K_psi_g
         
         return F_psi_g
 
@@ -834,7 +875,7 @@ class KPWSCF(lib.StreamObject):
             dict with energy components: 
             {E_kin, E_ne, E_hartree, E_exchange, E_nuc, E_tot}
         """
-        occ_weight = 2.0 / self.nk  # Closed shell
+        occ_weight_per_orbital = 2.0  # Closed shell: 2 electrons per spatial orbital
         
         
         # Precompute Hartree potential and energy from total density
@@ -852,72 +893,52 @@ class KPWSCF(lib.StreamObject):
         E_kin = 0.0
         E_ne = 0.0
         E_exchange = 0.0
-        E_exchange_g = 0.0  # G-space version for comparison
         
         # Debug: check if we have occupied orbitals
         if self.nocc == 0:
             raise RuntimeError("No occupied orbitals (self.nocc = 0)!")
         
+    
         # Loop over k-points and occupied orbitals
         for ik in range(self.nk):
+            E_kin_k = 0.0
             for n in range(self.nocc):
                 logger.debug(self, f"Computing energy contributions for k-point {ik}, band {n}")
                 psi_g = self.psi_g[ik, n].copy()
-                psi_r = self._ifft_g2r(psi_g)
                 
-                # Kinetic energy: <ψ|T|ψ> = Σ_G T(G) |ψ(G)|²
-                # With L2 normalization (Σ|ψ_g|²=1), we compute directly without grid_weight
+                kpt = self.kpts[ik]
+                psi_r = self._ifft_g2r(psi_g, kpt=kpt)
+                
                 t_diag = self._kin_diag[ik]
-                E_kin_contrib = occ_weight * np.sum((t_diag * np.abs(psi_g)**2).real)
+                E_kin_contrib = occ_weight_per_orbital * np.sum((t_diag * np.abs(psi_g)**2).real)
                 E_kin += E_kin_contrib
+                E_kin_k += E_kin_contrib
                 
                 # Nuclear-electron energy: <ψ|V_nuc|ψ> includes both local and non-local PP
-                # Use _apply_nuc to get the full nuclear potential operator applied to ψ
                 Vnuc_psi_g = self._apply_nuc(ik, psi_g)
-                E_ne_contrib = occ_weight * np.vdot(psi_g, Vnuc_psi_g).real
+                E_ne_contrib = occ_weight_per_orbital * np.vdot(psi_g, Vnuc_psi_g).real
                 E_ne += E_ne_contrib
                 
                 
                 if with_k:
-                    # Exchange in R-space
                     K_psi_g = self._apply_k(ik, psi_g)
-                    K_psi_r = self._ifft_g2r(K_psi_g)
-                    K_psi_integral_r = np.sum(psi_r.conj() * K_psi_r).real * self.grid_weight
-                    E_x_contrib_r = 0.5 * occ_weight * K_psi_integral_r  # 0.5 factor, NO minus sign
-                    E_exchange += E_x_contrib_r
                     
-                    # Exchange in G-space: <ψ|K|ψ> = Σ_G ψ*(G) K_psi(G)
-                    # Since both psi_g and K_psi_g are in G-space with L2 norm, we use:
-                    # <ψ|K|ψ> = Σ_G ψ*(G) K_psi(G) (no grid_weight needed)
+                    # Exchange in G-space
                     K_psi_integral_g = np.vdot(psi_g, K_psi_g).real
-                    E_x_contrib_g = 0.5 * occ_weight * K_psi_integral_g
-                    E_exchange_g += E_x_contrib_g
+                    E_x_contrib_g = 0.5 * occ_weight_per_orbital * K_psi_integral_g
+                    E_exchange += E_x_contrib_g
                     
-        
-        
         # Nuclear-nuclear repulsion (Ewald energy for periodic systems)
         if hasattr(self.cell, 'energy_nuc'):
             E_nuc = self.cell.energy_nuc()
         else:
             E_nuc = 0.0
         
-        # Add Ewald divergence correction for exchange if exxdiv='ewald'
-        # This corrects for the G=0 divergence in periodic exchange
-        # The correction is: -0.5 * N_elec * madelung
-        if with_k and self.exxdiv == 'ewald':
-            from pyscf.pbc import tools as pbctools
-            madelung = pbctools.madelung(self.cell, np.zeros(3))
-            E_ewald_correction = -0.5 * self.cell.nelectron * madelung
-            #logger.debug(self, f"Ewald exchange correction: madelung={madelung:.6e}, "
-            #            f"N_elec={self.cell.nelectron}, correction={E_ewald_correction:.6e}")
-            E_exchange += E_ewald_correction
-            E_exchange_g += E_ewald_correction
-            
-            #logger.debug(self, f"Total Exchange (R-space): {E_exchange:.10f}")
-            #logger.debug(self, f"Total Exchange (G-space): {E_exchange_g:.10f}")
-            #logger.debug(self, f"Total Exchange difference (R-G): {abs(E_exchange - E_exchange_g):.2e}")
         
-        # Total energy
+        E_exchange /= self.nk
+        E_kin /= self.nk
+        E_ne /= self.nk
+        
         E_tot = E_kin + E_ne + E_hartree + E_exchange + E_nuc
         
         return {
@@ -925,7 +946,6 @@ class KPWSCF(lib.StreamObject):
             'E_ne': E_ne,
             'E_hartree': E_hartree,
             'E_exchange': E_exchange,
-            'E_exchange_g': E_exchange_g,  # G-space version for debugging
             'E_nuc': E_nuc,
             'E_tot': E_tot
         }
@@ -933,50 +953,69 @@ class KPWSCF(lib.StreamObject):
     def _apply_k(self, ik, psi_nk_g):
         """Apply exchange operator K to wavefunction for closed-shell system.
         
-        In Fourier space:
-        1. Compute pair density ρ_{nm}(r) = ψ_m*(r) * ψ_n(r)
-        2. Solve Poisson in G-space: V_{nm}(G) = (4π/|G|^2) FFT[ρ_{nm}(r)]
-        3. Transform back: V_{nm}(r) = IFFT[V_{nm}(G)]
+        For full Bloch waves ψ_{nk}(r) = e^{ik·r} u_{nk}(r):
+        
+        K|ψ_{nk}⟩ = Σ_q Σ_m^{occ} |ψ_{qm}⟩ ⟨ψ_{qm}|V|ψ_{nk}⟩
+        
+        The pair density is:
+        ρ(r) = ψ_{qm}*(r) ψ_{nk}(r) = e^{i(k-q)·r} [u_{qm}*(r) u_{nk}(r)]
+        
+        FFT of this gives coefficients at G + (k-q), so we need Coulomb kernel
+        at |G + (k-q)|^2.
         
         Args:
-            ik: k-point index (currently assumes Gamma point, ik=0)
+            ik: k-point index
             psi_nk_g: (ngrids,) wavefunction in G-space for band n at k-point ik
         Returns:
             K|ψ_n⟩ in G-space (ngrids,)
         """
-        coulG = self._coulG0 if self._coulG0 is not None else pbctools.get_coulG(self.cell, mesh=self.mesh, exxdiv=self.exxdiv)
-        
         # Transform input wavefunction to real space
-        psi_n_r = self._ifft_g2r(psi_nk_g)
+        kpt = self.kpts[ik]
+        psi_nk_r = self._ifft_g2r(psi_nk_g, kpt=kpt)
         
         # Initialize exchange contribution
         k_psi_g = np.zeros_like(psi_nk_g)
         
-        # Loop over all occupied orbitals
-        for n_occ in range(self.nocc):
-            # Get occupied orbital in real space
-            psi_occ_g = self.psi_g[ik, n_occ]  # (ngrids,)
-            psi_occ_r = self._ifft_g2r(psi_occ_g)
-            
-            # Compute pair density: ρ_{n,m}(r) = ψ_m*(r) * ψ_n(r)
-            rho_ij_r = psi_occ_r.conj() * psi_n_r  # (ngrids,)
-            
-            # Transform to G-space (use density FFT, not wavefunction FFT)
-            rho_ij_g = self._fft_density_r2g(rho_ij_r)  # (ngrids,)
-            
-            # Apply Coulomb kernel: V_{n,m}(G) = (4π/|G|^2) * ρ_{n,m}(G)
-            V_ij_g = coulG * rho_ij_g  # (ngrids,)
-            
-            # Transform back to real space (use potential IFFT, not wavefunction IFFT)
-            V_ij_r = self._ifft_potential_g2r(V_ij_g)  # (ngrids,)
-            
-            # Accumulate exchange: -2 * V_{n,m}(r) * ψ_m(r)  [factor 2 for spin]
-            k_psi_r = -V_ij_r * psi_occ_r  # (ngrids,)
-            k_psi_g += self._fft_r2g(k_psi_r)  # (ngrids,)
+        # K-point weight: each k-point in the BZ contributes with weight 1/nk
+        kpt_weight = 1.0 / self.nk
         
+       
+        for iq in range(self.nk):
+            
+            k_diff = self.kpts[ik] - self.kpts[iq]
+            
+
+            if np.allclose(k_diff, 0):
+                coulG = self._coulG0 if self._coulG0 is not None else \
+                        pbctools.get_coulG(self.cell, mesh=self.mesh, exxdiv=None)
+            else:
+                exxdiv_arg = None if self.exxdiv == 'ewald' else self.exxdiv
+                coulG = pbctools.get_coulG(self.cell, k=k_diff, mesh=self.mesh, exxdiv=exxdiv_arg)
+
+            
+            
+            for m_occ in range(self.nocc):
+                
+                psi_qm_g = self.psi_g[iq, m_occ]
+                k_q = self.kpts[iq]
+                psi_qm_r = self._ifft_g2r(psi_qm_g, kpt=k_q)
+                rho_r = psi_qm_r.conj() * psi_nk_r
+                rho_g = self._fft_density_r2g(rho_r, kpt=k_diff)
+                
+                V_g = coulG * rho_g
+                V_r = self._ifft_potential_g2r(V_g, kpt=k_diff)
+                
+                k_psi_r = -V_r * psi_qm_r
+                
+                k_psi_g += kpt_weight * self._fft_r2g(k_psi_r, kpt=kpt)
+        
+        if self.exxdiv == 'ewald':
+            madelung = pbctools.madelung(self.cell, self.kpts)
+            k_psi_g -= madelung * self.psi_g[ik, 0]
+            
         return k_psi_g
 
-    # ----------------------------- Solvers ----------------------------- #
+    
     def _block_davidson(self, ik, with_k=True, max_cycle=5, tol=1e-6, 
                         scf_iter=1, rho_r=None):
         """Block Davidson diagonalization for all nband orbitals at once.
@@ -998,44 +1037,36 @@ class KPWSCF(lib.StreamObject):
         """
         log = logger.new_logger(self, self.verbose)
         
-        # Parameters
         max_subspace_size = 3 * self.nband
         
-        # Initialize subspace with current orbitals
         subspace = [self.psi_g[ik, n].copy() for n in range(self.nband)]
         
         for davidson_iter in range(max_cycle):
             nv = len(subspace)
             
-            # 1. Orthonormalize subspace using QR
             subspace_matrix = np.column_stack([v.reshape(-1) for v in subspace])
             Q, _ = np.linalg.qr(subspace_matrix)
             subspace = [Q[:, i] for i in range(Q.shape[1])]
             nv = len(subspace)
             
-            # 2. Build subspace Hamiltonian: H_ij = ⟨v_i|F|v_j⟩
             H_subspace = np.zeros((nv, nv), dtype=complex)
             for i in range(nv):
                 F_vi = self.apply_fock(ik, subspace[i], rho_r=rho_r, with_j=True, with_k=with_k)
                 for j in range(nv):
                     H_subspace[j, i] = np.vdot(subspace[j], F_vi)
             
-            # 3. Diagonalize subspace Hamiltonian
             e, c = np.linalg.eigh(H_subspace)
             idx = np.argsort(e.real)[:self.nband]
             e_sorted = e.real[idx]
             
-            # 4. Construct new wavefunctions from subspace
             psi_new = np.zeros((self.nband, self.ngrids), dtype=complex)
             for n in range(self.nband):
                 for i in range(nv):
                     psi_new[n] += c[i, idx[n]] * subspace[i]
-                # Normalize in G-space
                 norm = np.sqrt(np.sum(np.abs(psi_new[n])**2))
                 if norm > 1e-10:
                     psi_new[n] /= norm
             
-            # 5. Compute residuals and check convergence
             residuals = []
             max_res_norm = 0.0
             for n in range(self.nband):
@@ -1052,7 +1083,6 @@ class KPWSCF(lib.StreamObject):
                         davidson_iter + 1, max_res_norm)
                 break
             
-            # 6. Precondition residuals and expand subspace
             hdiag = self._kin_diag[ik]
             for n in range(self.nband):
                 shift = 0.001
@@ -1060,13 +1090,11 @@ class KPWSCF(lib.StreamObject):
                 precond_denom[np.abs(precond_denom) < 1e-8] = 1e-8
                 P_n = residuals[n] / precond_denom
                 
-                # Normalize and add to subspace
                 norm_p = np.sqrt(np.sum(np.abs(P_n)**2))
                 if norm_p > 1e-10:
                     P_n /= norm_p
                     subspace.append(P_n)
             
-            # 7. Restart if subspace too large
             if len(subspace) > max_subspace_size:
                 logger.debug(self, '    Subspace size %d > %d, restarting', 
                          len(subspace), max_subspace_size)
@@ -1099,11 +1127,9 @@ class KPWSCF(lib.StreamObject):
         Returns:
             (E_tot, converged) tuple
         """
-        # Build operators if not already built
         if not hasattr(self, '_vne_R') or self._vne_R is None:
             self.build()
         
-        # Initialize if requested
         if init is not None:
             self.init_guess(kind=init, mo_coeff=mo_coeff, mo_occ=mo_occ)
         
@@ -1115,10 +1141,8 @@ class KPWSCF(lib.StreamObject):
         logger.info(self, 'Davidson tol = %.2e, max_cycle = %d', davidson_tol, davidson_max_cycle)
         logger.info(self, 'SCF conv_tol = %.2e, conv_tol_rho = %.2e', conv_tol, conv_tol_rho)
         
-        # Allocate storage for energies
         self.mo_energy = np.zeros((self.nk, self.nband), dtype=float)
         
-        # Compute initial energy if wavefunctions are already initialized
         if hasattr(self, 'psi_r') and self.psi_r is not None:
             energy_dict_init = self.compute_energy_components(with_k=with_k)
             e_init = energy_dict_init['E_tot']
@@ -1129,44 +1153,36 @@ class KPWSCF(lib.StreamObject):
             logger.debug(self, '    E_exchange= %.10f', energy_dict_init['E_exchange'])
             logger.debug(self, '    E_nuc     = %.10f', energy_dict_init['E_nuc'])
             
-            # Compute and print initial orbital energies <ψ|F|ψ>
             logger.debug(self, '  Initial orbital energies (before Davidson):')
             for ik in range(self.nk):
                 for n in range(self.nband):
                     psi_g_n = self.psi_g[ik, n]
-                    # Apply Fock operator
                     F_psi_g = self.apply_fock(ik, psi_g_n, with_j=True, with_k=with_k)
-                    # Compute <ψ|F|ψ>
                     e_orbital = np.vdot(psi_g_n.conj(), F_psi_g).real
                     self.mo_energy[ik, n] = e_orbital
-                    if n < 4:  # Print first few
+                    if n < 4:
                         logger.debug(self, '    k=%d, band %d: e = %.6f Ha', ik, n, e_orbital)
             
         
-        # SCF loop
         e_tot_prev = 0.0
         rho_r_prev = None
-        rho_r_mixed = None  # For density mixing
+        rho_r_mixed = None
         converged = False
         
         for scf_iter in range(1, max_cycle + 1):
-            # Get density from current orbitals
             rho_r_computed = self.get_density_r()
             
-            # Apply density mixing (except first iteration)
             if rho_r_prev is not None and alpha < 1.0:
                 rho_r = alpha * rho_r_computed + (1.0 - alpha) * rho_r_prev
             else:
                 rho_r = rho_r_computed
             
-            # Compute density change for convergence check
             if rho_r_prev is not None:
                 drho = rho_r_computed - rho_r_prev
                 rho_norm = np.linalg.norm(drho) * np.sqrt(self.grid_weight)
             else:
                 rho_norm = 1.0
             
-            # Solve orbitals using block Davidson
             for ik in range(self.nk):
                 logger.debug(self, '  k-point %d/%d: Block Davidson diagonalization...', ik + 1, self.nk)
                 
@@ -1179,7 +1195,6 @@ class KPWSCF(lib.StreamObject):
                     rho_r=rho_r
                 )
                 
-                # Update wavefunctions and energies
                 for n in range(self.nband):
                     self.psi_g[ik, n] = psi_new[n]
                     self.psi_r[ik, n] = self._ifft_g2r(psi_new[n])
@@ -1197,7 +1212,6 @@ class KPWSCF(lib.StreamObject):
             E_exchange = energy_dict['E_exchange']
             E_nuc = energy_dict['E_nuc']
             
-            # 6. Check energy convergence
             de = e_tot - e_tot_prev
             logger.info(self, 'Cycle %3d: E = %8.10f  dE = %+.6e  |dρ| = %.6e',
                         scf_iter, e_tot, de, rho_norm)
@@ -1207,21 +1221,22 @@ class KPWSCF(lib.StreamObject):
             logger.debug(self, '    E_exchange = %.10f', E_exchange)
             logger.debug(self, '    E_nuc = %.10f', E_nuc)
             
-            # 7. Convergence check
             if scf_iter > 1 and abs(de) < conv_tol and rho_norm < conv_tol_rho:
                 converged = True
                 logger.info(self, '\n*** SCF Converged! ***')
                 logger.info(self, 'E(HF) = %.10f Ha', e_tot)
                 break
             
-            # Update for next iteration
             e_tot_prev = e_tot
-            rho_r_prev = rho_r_computed.copy()  # Save the computed density (before mixing)
+            rho_r_prev = rho_r_computed.copy()
         
+        if max_cycle == 0 and 'e_tot' not in locals():
+            energy_dict = self.compute_energy_components(with_k=with_k)
+            e_tot = energy_dict['E_tot']
+            
         if not converged:
             logger.warn(self, '\n*** SCF NOT converged after %d iterations ***', max_cycle)
         
-        # Print final summary
         logger.info(self, '\n' + '=' * 60)
         logger.info(self, 'Final Results:')
         logger.info(self, '  Total Energy: %.10f Ha', e_tot)
