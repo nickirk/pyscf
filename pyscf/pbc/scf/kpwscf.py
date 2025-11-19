@@ -747,6 +747,7 @@ class KPWSCF(lib.StreamObject):
                         # Reshape tmp back to (nl*(2l+1),) for contraction
                         tmp_flat = tmp.ravel()
                         proj_back = np.dot(buf[p0:p1_reset].T.conj(), tmp_flat)
+                        proj_back *= SI[ia]  # Apply structure factor to shift to atom position
                         vnl_g += proj_back
         
         # Normalize by volume (from pseudopotential convention)
