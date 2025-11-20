@@ -10,6 +10,12 @@ from pyscf.pbc.dft import gen_grid as pbc_gen_grid
 from pyscf.pbc.scf.khf import KRHF
 from pyscf.pbc.dft import numint as pbc_numint
 from pyscf.pbc.lib.kpts import KPoints
+from pyscf.pbc.dft import numint as pbc_numint
+from pyscf.pbc.lib.kpts import KPoints
+from pyscf.pbc.mpitools import mpi
+import pyfftw
+from numba import jit
+
 
 
 class KPWSCF(lib.StreamObject):
@@ -34,6 +40,35 @@ class KPWSCF(lib.StreamObject):
             kpts = kpts.kpts
         self.kpts = np.asarray(kpts, dtype=float)
         self.nk = len(self.kpts)
+        
+        # MPI Setup
+        self.comm = mpi.comm
+        self.rank = mpi.rank
+        self.size = mpi.pool.size
+        
+        if self.rank != 0:
+            self.verbose = 0
+        
+        # Distribute k-points
+        # Each rank handles a subset of k-points
+        # self.kpts_local_idx stores indices of k-points handled by this rank
+        self.kpts_local_idx = np.array_split(np.arange(self.nk), self.size)[self.rank]
+        self.kpts_local = self.kpts[self.kpts_local_idx]
+        self.nk_local = len(self.kpts_local)
+        
+        # Build maps for global -> (rank, local_idx)
+        self.kpt_rank_map = np.zeros(self.nk, dtype=int)
+        self.kpt_local_map = np.zeros(self.nk, dtype=int)
+        
+        # Allgather local indices to build the map
+        all_local_indices = self.comm.allgather(self.kpts_local_idx)
+        for r, indices in enumerate(all_local_indices):
+            for loc_i, glob_i in enumerate(indices):
+                self.kpt_rank_map[glob_i] = r
+                self.kpt_local_map[glob_i] = loc_i
+        
+        logger.debug(self, 'MPI Rank %d handling %d k-points: %s', 
+                     self.rank, self.nk_local, self.kpts_local_idx)
         self.exxdiv = 'ewald'  # Default exchange divergence treatment for PBC
 
         # Mesh / grids
@@ -47,6 +82,12 @@ class KPWSCF(lib.StreamObject):
         self.ngrids = int(np.prod(self.grids.mesh))
         self.vol = float(self.cell.vol)
         self.grid_weight = self.grids.weights[0] if self.ngrids > 0 else 0.0  # ∫f ≈ weight * sum(f)
+
+        # FFTW Setup
+        pyfftw.config.PLANNER_EFFORT = 'FFTW_MEASURE'
+        pyfftw.interfaces.cache.enable()
+        self.fft_fn = pyfftw.interfaces.numpy_fft.fftn
+        self.ifft_fn = pyfftw.interfaces.numpy_fft.ifftn
 
         # Number of bands
         nelec = sum(self.cell.nelec) if hasattr(self.cell, 'nelec') else self.cell.nelectron
@@ -123,10 +164,7 @@ class KPWSCF(lib.StreamObject):
         """FFT from real-space to G-space with consistent normalization.
         
         For Bloch waves ψ(r) = e^(ik·r) u(r), demodulates before FFT.
-        
-        Convention:
-        - R-space: ∫|ψ_r|²dr = Σ|ψ_r|² × (V/N) = 1
-        - G-space: Σ|ψ_g|² = 1
+        Convention: Σ|ψ_g|² = 1
         
         Args:
             psi_r_block: (nband, ngrids) or (ngrids,) complex wavefunction in real space
@@ -134,39 +172,41 @@ class KPWSCF(lib.StreamObject):
         
         Returns: (nband, ngrids) or (ngrids,) complex in G-space
         """
+        # Reshape to 3D mesh for correct FFT
+        # Handle arbitrary leading dimensions (e.g. nband)
+        shape_orig = psi_r_block.shape
+        shape_3d = shape_orig[:-1] + tuple(self.mesh)
+        
         if kpt is not None and np.linalg.norm(kpt) > 1e-9:
             # For k≠0, demodulate e^(ik·r) before FFT
             coords = self.grids.coords
             phase = np.exp(-1j * np.dot(coords, kpt))  # e^(-ik·r)
             
+            # Apply phase modulation
             if psi_r_block.ndim == 1:
-                psi_r_2d = (psi_r_block * phase).reshape(1, -1)
-                psi_g_2d = pbctools.fft(psi_r_2d, self.mesh)
-                psi_g_2d *= np.sqrt(self.vol) / self.ngrids
-                return psi_g_2d[0]
+                psi_r_demod = psi_r_block * phase
             else:
                 psi_r_demod = psi_r_block * phase[None, :]
-                psi_g = pbctools.fft(psi_r_demod, self.mesh)
-                psi_g *= np.sqrt(self.vol) / self.ngrids
-                return psi_g
+            
+            # Reshape to 3D and FFT
+            psi_r_3d = psi_r_demod.reshape(shape_3d)
+            psi_g_3d = self.fft_fn(psi_r_3d, axes=(-3, -2, -1))
+            
+            # Reshape back and normalize
+            psi_g = psi_g_3d.reshape(shape_orig)
+            psi_g *= np.sqrt(self.vol) / self.ngrids
+            return psi_g
         else:
             # k=0 (Gamma point), use regular FFT
-            if psi_r_block.ndim == 1:
-                psi_r_2d = psi_r_block.reshape(1, -1)
-                psi_g_2d = pbctools.fft(psi_r_2d, self.mesh)
-                psi_g_2d *= np.sqrt(self.vol) / self.ngrids
-                return psi_g_2d[0]
-            else:
-                psi_g = pbctools.fft(psi_r_block, self.mesh)
-                psi_g *= np.sqrt(self.vol) / self.ngrids
-                return psi_g
+            psi_r_3d = psi_r_block.reshape(shape_3d)
+            psi_g_3d = self.fft_fn(psi_r_3d, axes=(-3, -2, -1))
+            
+            psi_g = psi_g_3d.reshape(shape_orig)
+            psi_g *= np.sqrt(self.vol) / self.ngrids
+            return psi_g
 
     def _fft_density_r2g(self, rho_r, kpt=None):
         """FFT density from real-space to G-space.
-        
-        For density ρ(r), we want ρ(G) = ∫ ρ(r) e^{-iG·r} dr
-        DFT gives: DFT[ρ] = Σ_r ρ_r e^{-iG·r}
-        To convert: ρ(G) = DFT[ρ_r] * (V/N)
         
         Args:
             rho_r: density in real space (ngrids,) or shaped for mesh
@@ -182,24 +222,21 @@ class KPWSCF(lib.StreamObject):
         else:
             rho_r_work = rho_r
         
-        if rho_r_work.ndim == 1:
-            rho_r_2d = rho_r_work.reshape(1, -1)
-            rho_g_2d = pbctools.fft(rho_r_2d, self.mesh)
-            rho_g_2d *= (self.vol / self.ngrids)
-            return rho_g_2d[0]
-        else:
-            rho_g = pbctools.fft(rho_r_work, self.mesh)
-            rho_g *= (self.vol / self.ngrids)
-            return rho_g
+        # Reshape to 3D mesh
+        shape_orig = rho_r_work.shape
+        shape_3d = shape_orig[:-1] + tuple(self.mesh)
+        
+        rho_r_3d = rho_r_work.reshape(shape_3d)
+        rho_g_3d = self.fft_fn(rho_r_3d, axes=(-3, -2, -1))
+        
+        rho_g = rho_g_3d.reshape(shape_orig)
+        rho_g *= (self.vol / self.ngrids)
+        return rho_g
 
     def _ifft_g2r(self, psi_g_block, kpt=None):
         """IFFT from G-space to real-space with consistent normalization.
         
-        For Bloch waves, remodulates with e^(ik·r) after IFFT to get full Bloch wave.
-        
-        Convention:
-        - G-space: Σ|ψ_g|² = 1
-        - R-space: ∫|ψ_r|²dr = Σ|ψ_r|² × (V/N) = 1
+        For Bloch waves, remodulates with e^(ik·r) after IFFT.
         
         Args:
             psi_g_block: (nband, ngrids) or (ngrids,) complex in G-space
@@ -207,38 +244,30 @@ class KPWSCF(lib.StreamObject):
         
         Returns: (nband, ngrids) or (ngrids,) complex Bloch wave in real-space
         """
+        # Reshape to 3D mesh for correct IFFT
+        shape_orig = psi_g_block.shape
+        shape_3d = shape_orig[:-1] + tuple(self.mesh)
+        
+        psi_g_3d = psi_g_block.reshape(shape_3d)
+        psi_r_3d = self.ifft_fn(psi_g_3d, axes=(-3, -2, -1))
+        psi_r = psi_r_3d.reshape(shape_orig)
+        psi_r *= self.ngrids / np.sqrt(self.vol)
+        
         if kpt is not None and np.linalg.norm(kpt) > 1e-9:
             # For k≠0, remodulate with e^(ik·r) after IFFT
             coords = self.grids.coords
             phase = np.exp(1j * np.dot(coords, kpt))  # e^(ik·r)
             
             if psi_g_block.ndim == 1:
-                psi_g_2d = psi_g_block.reshape(1, -1)
-                psi_r_2d = pbctools.ifft(psi_g_2d, self.mesh)
-                psi_r_2d *= self.ngrids / np.sqrt(self.vol)
-                return (psi_r_2d[0] * phase)
+                return psi_r * phase
             else:
-                psi_r = pbctools.ifft(psi_g_block, self.mesh)
-                psi_r *= self.ngrids / np.sqrt(self.vol)
                 return psi_r * phase[None, :]
         else:
             # k=0 (Gamma point), use regular IFFT
-            if psi_g_block.ndim == 1:
-                psi_g_2d = psi_g_block.reshape(1, -1)
-                psi_r_2d = pbctools.ifft(psi_g_2d, self.mesh)
-                psi_r_2d *= self.ngrids / np.sqrt(self.vol)
-                return psi_r_2d[0]
-            else:
-                psi_r = pbctools.ifft(psi_g_block, self.mesh)
-                psi_r *= self.ngrids / np.sqrt(self.vol)
-                return psi_r
+            return psi_r
 
     def _ifft_potential_g2r(self, V_g, kpt=None):
         """IFFT potential from G-space to real-space.
-        
-        For potential V(r), inverse FT is: V(r) = (1/V) Σ_G V(G) e^{iG·r}
-        Numpy IFFT gives: IFFT[V] = (1/N) Σ_G V_G e^{iG·r}
-        To convert: V(r) = (N/V) × IFFT[V(G)]
         
         Args:
             V_g: potential in G-space (ngrids,)
@@ -248,16 +277,49 @@ class KPWSCF(lib.StreamObject):
         phase = 1
         if kpt is not None:
             kpt = np.asarray(kpt, dtype=float)
-            phase = np.exp(1j * np.dot(self.grids.coords, kpt))
-        if V_g.ndim == 1:
-            V_g_2d = V_g.reshape(1, -1)
-            V_r_2d = pbctools.ifft(V_g_2d, self.mesh)
-            V_r_2d *= (self.ngrids / self.vol)
-            return V_r_2d[0] * phase
-        else:
-            V_r = pbctools.ifft(V_g, self.mesh)
-            V_r *= (self.ngrids / self.vol)
-            return V_r * phase
+            # Optimize phase calculation using separable 1D factors
+            # exp(i k.r) = exp(i kx x) * exp(i ky y) * exp(i kz z)
+            
+            # Let's stick to the safe optimization:
+            # If kpt is small (e.g. 0), skip.
+            if np.allclose(kpt, 0):
+                phase = 1.0
+            else:
+                # Use einsum to compute dot product then exp? No, that's what we had.
+                # We need to avoid N exponentials.
+                
+                # Construct 1D phase arrays
+                # r_vec = n/N * a_vec
+                # phase_1d = exp(1j * (n/N) * (a_vec . k))
+                
+                a_vecs = self.cell.lattice_vectors()
+                phases_1d = []
+                for i in range(3):
+                    N = self.mesh[i]
+                    n = np.arange(N)
+                    # projection of k on lattice vector i
+                    # k_dot_ai = np.dot(kpt, a_vecs[i])
+                    # But wait, grid is defined as r = (n1/N1)a1 + ...
+                    # So k.r = n1/N1 (k.a1) + ...
+                    
+                    k_dot_ai = np.dot(kpt, a_vecs[i])
+                    arg = (n / N) * k_dot_ai
+                    phases_1d.append(np.exp(1j * arg))
+                
+                px, py, pz = phases_1d               
+                phase = (px[:, None, None] * py[None, :, None] * pz[None, None, :]).reshape(-1)
+        
+        # Reshape to 3D mesh
+        shape_orig = V_g.shape
+        shape_3d = shape_orig[:-1] + tuple(self.mesh)
+        
+        V_g_3d = V_g.reshape(shape_3d)
+        V_r_3d = self.ifft_fn(V_g_3d, axes=(-3, -2, -1))
+        
+        V_r = V_r_3d.reshape(shape_orig)
+        V_r *= (self.ngrids / self.vol)
+        
+        return V_r * phase
 
     def build(self):
         """Sanity checks and operator precompute."""
@@ -283,10 +345,12 @@ class KPWSCF(lib.StreamObject):
     def _precompute_kinetic(self):
         """Diagonal kinetic operator in G for each k: 0.5*|G+k|^2."""
         Gv = self._Gv
-        self._kin_diag = np.empty((self.nk, self.ngrids), dtype=float)
-        for ik, kpt in enumerate(self.kpts):
+        # Store only local k-points
+        self._kin_diag = np.empty((self.nk_local, self.ngrids), dtype=float)
+        for i, ik in enumerate(self.kpts_local_idx):
+            kpt = self.kpts[ik]
             Gk = Gv + kpt  # broadcast
-            self._kin_diag[ik] = 0.5 * np.einsum('ij,ij->i', Gk, Gk)
+            self._kin_diag[i] = 0.5 * np.einsum('ij,ij->i', Gk, Gk)
 
     def _build_vne(self):
         """Build nuclear-electron potential V_ne in real space.
@@ -330,10 +394,11 @@ class KPWSCF(lib.StreamObject):
         # Cache Coulomb kernel for use in Hartree energy calculation
         self._coulG0 = pbctools.get_coulG(cell, mesh=mesh, Gv=Gv)
         
-        # Transform to real space
-        # pbctools.ifft uses 1/N normalization, but we need 1/Ω for potentials
-        # V(r) = (1/Ω) Σ_G V(G) e^(iG·r) = (N/Ω) × IFFT[V(G)]
-        self._vne_R = pbctools.ifft(vneG, mesh).real * (self.ngrids / self.vol)
+        # Transform to real space (using 3D IFFT)
+        vneG_3d = vneG.reshape(self.mesh)
+        vne_R_3d = self.ifft_fn(vneG_3d, axes=(0, 1, 2))
+        self._vne_R = vne_R_3d.reshape(-1).real * (self.ngrids / self.vol)
+        
         log.debug1('Built V_ne+Vloc on grid; min/max %.6g / %.6g', 
                    self._vne_R.min(), self._vne_R.max())
         return self._vne_R
@@ -343,58 +408,63 @@ class KPWSCF(lib.StreamObject):
     def _init_wavefunctions_storage(self):
         """Initialize psi_r and psi_g arrays after ensuring grids are built."""
         self._ensure_grids_built()
-        self.psi_r = np.zeros((self.nk, self.nband, self.ngrids), dtype=complex)
+        # Storage for local k-points only
+        self.psi_r = np.zeros((self.nk_local, self.nband, self.ngrids), dtype=complex)
         self.psi_g = np.zeros_like(self.psi_r)
 
-    def _normalize_and_store_orbital_r(self, psi_r_n, ik, n):
-        """Normalize orbital in real space and store in psi_r and psi_g.
+    def _normalize_and_store_orbital_r(self, psi_r_n, ik_local, n):
+        """Normalize orbital in real space and store in psi_r/psi_g.
         
         Args:
-            psi_r_n: orbital in real space (ngrids,)
-            ik: k-point index
+            psi_r_n: (ngrids,) complex wavefunction in real space
+            ik_local: local k-point index (for self.psi_r/psi_g)
             n: band index
-            log: logger object
-            
-        Returns:
-            True if successful, False if orbital has near-zero norm
         """
         norm_r_integral = np.sqrt(np.sum(np.abs(psi_r_n)**2) * self.grid_weight)
         if norm_r_integral > 1e-10:
             psi_r_n /= norm_r_integral
-            self.psi_r[ik, n] = psi_r_n
+            self.psi_r[ik_local, n] = psi_r_n
+            
             # Pass k-point when FFTing to handle Bloch wave phase
-            kpt = self.kpts[ik]
-            self.psi_g[ik, n] = self._fft_r2g(psi_r_n, kpt=kpt)
+            ik_global = self.kpts_local_idx[ik_local]
+            kpt = self.kpts[ik_global]
+            self.psi_g[ik_local, n] = self._fft_r2g(psi_r_n, kpt=kpt)
             return True
         else:
-            logger.warn(self, 'Orbital %d at k-point %d has near-zero norm, skipping', n, ik)
+            ik_global = self.kpts_local_idx[ik_local]
+            logger.warn(self, 'Orbital %d at k-point %d has near-zero norm, skipping', n, ik_global)
             return False
 
-    def _fill_random_virtual_orbitals(self, n_start, rng):
+    def _fill_random_virtual_orbitals(self, n_start, base_seed):
         """Fill virtual bands with random values in G-space.
+        
+        Uses deterministic per-k-point seeds to ensure MPI-independent results.
         
         Args:
             n_start: starting band index for random orbitals
-            rng: numpy random number generator
-            log: logger object
+            base_seed: base seed for random number generator
         """
-        for ik in range(self.nk):
+        for i, ik in enumerate(self.kpts_local_idx):
+            # Use deterministic seed based on global k-point index
+            kpt_rng = np.random.RandomState(base_seed + ik)
             for n in range(n_start, self.nband):
-                psi_g_n = (rng.randn(self.ngrids) + 1j * rng.randn(self.ngrids))
+                psi_g_n = (kpt_rng.randn(self.ngrids) + 1j * kpt_rng.randn(self.ngrids))
                 norm_g = np.sqrt(np.sum(np.abs(psi_g_n)**2))
                 if norm_g > 1e-10:
                     psi_g_n /= norm_g
-                self.psi_g[ik, n] = psi_g_n
-                self.psi_r[ik, n] = self._ifft_g2r(psi_g_n)
+                self.psi_g[i, n] = psi_g_n
+                self.psi_r[i, n] = self._ifft_g2r(psi_g_n)
 
     def _log_normalization_check(self):
         """Log normalization check for debugging."""
         if self.verbose >= logger.DEBUG:
             logger.debug(self, '  Checking normalization:')
-            for ik in range(min(2, self.nk)):
+            # Only check local k-points
+            for i, ik in enumerate(self.kpts_local_idx):
+                if i >= 2: break # Limit output
                 for n in range(min(4, self.nband)):
-                    norm_r = np.sqrt(np.sum(np.abs(self.psi_r[ik, n])**2) * self.grid_weight)
-                    norm_g = np.sqrt(np.sum(np.abs(self.psi_g[ik, n])**2))
+                    norm_r = np.sqrt(np.sum(np.abs(self.psi_r[i, n])**2) * self.grid_weight)
+                    norm_g = np.sqrt(np.sum(np.abs(self.psi_g[i, n])**2))
                     logger.debug(self, '    k=%d n=%d: ∫|ψ_r|²dr=%.6e, Σ|ψ_g|²=%.6e', 
                              ik, n, norm_r, norm_g)
 
@@ -437,8 +507,9 @@ class KPWSCF(lib.StreamObject):
         rng = np.random.RandomState(seed)
         
         n_fill = min(nocc_from_ao, self.nband)
-        for ik, kpt in enumerate(self.kpts):
-            log.debug('  Processing k-point %d/%d', ik + 1, self.nk)
+        for i, ik in enumerate(self.kpts_local_idx):
+            kpt = self.kpts[ik]
+            log.debug('  Processing k-point %d/%d (Rank %d)', ik + 1, self.nk, self.rank)
             
             # Evaluate AOs at k-point on grid and transform to MOs
             ao_value = numint.eval_ao(self.cell, coords, kpt=kpt, deriv=0)
@@ -447,10 +518,10 @@ class KPWSCF(lib.StreamObject):
             # Fill bands from projected AO orbitals
             for n in range(n_fill):
                 psi_r_n = mo_on_grid[:, n].copy()
-                self._normalize_and_store_orbital_r(psi_r_n, ik, n)
+                self._normalize_and_store_orbital_r(psi_r_n, i, n)
         
         # Fill remaining virtual bands with random orbitals
-        self._fill_random_virtual_orbitals(n_fill, rng)
+        self._fill_random_virtual_orbitals(n_fill, seed)
         
         logger.info(self, '  Initialization complete')
         self._log_normalization_check()
@@ -495,8 +566,9 @@ class KPWSCF(lib.StreamObject):
         rng = np.random.RandomState(seed)
         
         n_fill = min(nocc_from_ao, self.nband)
-        for ik, kpt in enumerate(self.kpts):
-            log.debug('  Processing k-point %d/%d', ik + 1, self.nk)
+        for i, ik in enumerate(self.kpts_local_idx):
+            kpt = self.kpts[ik]
+            log.debug('  Processing k-point %d/%d (Rank %d)', ik + 1, self.nk, self.rank)
             
             # Evaluate AOs at k-point on grid and transform to MOs
             ao_value = numint.eval_ao(self.cell, coords, kpt=kpt, deriv=0)
@@ -505,10 +577,10 @@ class KPWSCF(lib.StreamObject):
             # Fill bands from projected AO orbitals
             for n in range(n_fill):
                 psi_r_n = mo_on_grid[:, n].copy()
-                self._normalize_and_store_orbital_r(psi_r_n, ik, n)
+                self._normalize_and_store_orbital_r(psi_r_n, i, n)
         
         # Fill remaining virtual bands with random orbitals
-        self._fill_random_virtual_orbitals(n_fill, rng)
+        self._fill_random_virtual_orbitals(n_fill, seed)
         
         log.info('  Initialization complete')
         self._log_normalization_check()
@@ -547,12 +619,12 @@ class KPWSCF(lib.StreamObject):
         
         self._init_wavefunctions_storage()
         coords = self.grids.coords
-        rng = np.random.RandomState(seed)
         
         # Determine minimum n_fill across all k-points
         n_fill_min = self.nband
-        for ik, kpt in enumerate(self.kpts):
-            logger.debug(self, '  Processing k-point %d/%d', ik + 1, self.nk)
+        for i, ik in enumerate(self.kpts_local_idx):
+            kpt = self.kpts[ik]
+            logger.debug(self, '  Processing k-point %d/%d (Rank %d)', ik + 1, self.nk, self.rank)
             
             mo_k = mo_coeff[ik]  # (nao, nmo)
             nmo_available = mo_k.shape[1]
@@ -579,10 +651,13 @@ class KPWSCF(lib.StreamObject):
             # Fill bands from MO projections
             for n in range(n_fill):
                 psi_r_n = mo_on_grid[:, n].copy()
-                self._normalize_and_store_orbital_r(psi_r_n, ik, n)
+                self._normalize_and_store_orbital_r(psi_r_n, i, n)
+        
+        # Sync n_fill_min across ranks
+        n_fill_min = self.comm.allreduce(n_fill_min, op=mpi.MPI.MIN)
         
         # Fill remaining virtual bands with random orbitals
-        self._fill_random_virtual_orbitals(n_fill_min, rng)
+        self._fill_random_virtual_orbitals(n_fill_min, seed)
         
         return self
 
@@ -607,22 +682,26 @@ class KPWSCF(lib.StreamObject):
                 raise ValueError("mo_coeff must be provided for kind='mo'")
             return self.init_guess_from_mo_coeff(mo_coeff, mo_occ, seed=seed)
         elif kind == 'random':
-            # Keep existing random initialization
+            # Random initialization with deterministic per-k-point seeding for MPI consistency
             log = logger.new_logger(self, self.verbose)
             log.info('init_guess: Random initialization')
-            rng = np.random.RandomState(seed)
-            self.psi_r = np.zeros((self.nk, self.nband, self.ngrids), dtype=complex)
-            self.psi_g = np.zeros_like(self.psi_r)
             
-            for ik in range(self.nk):
+            # Use standard storage initialization (correct sizing for MPI)
+            self._init_wavefunctions_storage()
+            
+            # Use deterministic seed based on global k-point index
+            # This ensures MPI-independent results regardless of rank count
+            for i, ik in enumerate(self.kpts_local_idx):
+                kpt_rng = np.random.RandomState(seed + ik)
+                kpt = self.kpts[ik]
                 for n in range(self.nband):
                     # Random in G-space
-                    psi_g_n = (rng.randn(self.ngrids) + 1j * rng.randn(self.ngrids))
+                    psi_g_n = (kpt_rng.randn(self.ngrids) + 1j * kpt_rng.randn(self.ngrids))
                     norm_g = np.sqrt(np.sum(np.abs(psi_g_n)**2))
                     if norm_g > 1e-10:
                         psi_g_n /= norm_g
-                    self.psi_g[ik, n] = psi_g_n
-                    self.psi_r[ik, n] = self._ifft_g2r(psi_g_n)
+                    self.psi_g[i, n] = psi_g_n
+                    self.psi_r[i, n] = self._ifft_g2r(psi_g_n, kpt=kpt)
             return self
         else:
             raise ValueError(f"Unknown init_guess kind: {kind}. Use 'atom', 'minao', or 'random'")
@@ -637,9 +716,14 @@ class KPWSCF(lib.StreamObject):
             raise RuntimeError('Call init_guess() first')
         rho_r = np.zeros(self.ngrids, dtype=float)
         occ_weight = 2.0 / self.nk  # For closed shell, each orbital has weight 2
-        for ik in range(self.nk):
-            psi_r = self.psi_r[ik, :self.nocc]  # (nocc, ngr)
+        
+        # Local contribution
+        for i, ik in enumerate(self.kpts_local_idx):
+            psi_r = self.psi_r[i, :self.nocc]  # (nocc, ngr)
             rho_r += occ_weight * (np.abs(psi_r)**2).sum(axis=0)
+            
+        # Reduce across all ranks
+        rho_r = self.comm.allreduce(rho_r, op=mpi.MPI.SUM)
         return rho_r
 
     def get_density_G(self):
@@ -793,9 +877,9 @@ class KPWSCF(lib.StreamObject):
                         # Contract back: buf[p0:p1_reset] has shape (nl*(2l+1), ngrids)
                         # Reshape tmp back to (nl*(2l+1),) for contraction
                         tmp_flat = tmp.ravel()
-                        proj_back = np.dot(buf[p0:p1_reset].T.conj(), tmp_flat)
-                        proj_back *= SI[ia]  # Apply structure factor to shift to atom position
-                        vnl_g += proj_back
+                        
+                        # Use Numba optimized contraction
+                        _contract_projectors(buf[p0:p1_reset], tmp_flat, SI[ia], vnl_g)
         
         # Normalize by volume (from pseudopotential convention)
         vnl_g *= (1.0 / cell.vol)
@@ -828,7 +912,8 @@ class KPWSCF(lib.StreamObject):
         
         # 1. Apply Kinetic Energy (Diagonal in G-space)
         # T = 0.5 * |k + G|^2
-        t_g = self._kin_diag[ik]  # (ngrids,)
+        ik_local = self.kpt_local_map[ik]
+        t_g = self._kin_diag[ik_local]  # (ngrids,)
         F_psi_g += t_g * psi_nk_g
         
         # 2. Apply Nuclear and Pseudopotential Potential (local + non-local)
@@ -875,20 +960,15 @@ class KPWSCF(lib.StreamObject):
             dict with energy components: 
             {E_kin, E_ne, E_hartree, E_exchange, E_nuc, E_tot}
         """
-        occ_weight_per_orbital = 2.0  # Closed shell: 2 electrons per spatial orbital
+        occ_weight_per_orbital = 2.0  
         
         
         # Precompute Hartree potential and energy from total density
-        rho_r = self.get_density_r()  
         rho_g = self.get_density_G()
         coulG = self._coulG0 if self._coulG0 is not None else pbctools.get_coulG(self.cell, mesh=self.mesh)
-        vH_g = coulG * rho_g
-        vH_r = self._ifft_g2r(vH_g).real
-        
-        E_hartree_r = 0.5 * np.sum(rho_r * vH_r).real * self.grid_weight
-        
-        E_hartree = E_hartree_r
-        
+        vH_g = coulG * rho_g       
+        E_hartree = 0.5 * np.sum(rho_g * vH_g).real
+
         # Initialize other energy components
         E_kin = 0.0
         E_ne = 0.0
@@ -900,19 +980,14 @@ class KPWSCF(lib.StreamObject):
         
     
         # Loop over k-points and occupied orbitals
-        for ik in range(self.nk):
-            E_kin_k = 0.0
+        for i, ik in enumerate(self.kpts_local_idx):
             for n in range(self.nocc):
                 logger.debug(self, f"Computing energy contributions for k-point {ik}, band {n}")
-                psi_g = self.psi_g[ik, n].copy()
+                psi_g = self.psi_g[i, n].copy()
                 
-                kpt = self.kpts[ik]
-                psi_r = self._ifft_g2r(psi_g, kpt=kpt)
-                
-                t_diag = self._kin_diag[ik]
+                t_diag = self._kin_diag[i]
                 E_kin_contrib = occ_weight_per_orbital * np.sum((t_diag * np.abs(psi_g)**2).real)
                 E_kin += E_kin_contrib
-                E_kin_k += E_kin_contrib
                 
                 # Nuclear-electron energy: <ψ|V_nuc|ψ> includes both local and non-local PP
                 Vnuc_psi_g = self._apply_nuc(ik, psi_g)
@@ -939,6 +1014,11 @@ class KPWSCF(lib.StreamObject):
         E_kin /= self.nk
         E_ne /= self.nk
         
+        # Reduce energy components across ranks
+        E_exchange = self.comm.allreduce(E_exchange, op=mpi.MPI.SUM)
+        E_kin = self.comm.allreduce(E_kin, op=mpi.MPI.SUM)
+        E_ne = self.comm.allreduce(E_ne, op=mpi.MPI.SUM)
+        
         E_tot = E_kin + E_ne + E_hartree + E_exchange + E_nuc
         
         return {
@@ -950,6 +1030,7 @@ class KPWSCF(lib.StreamObject):
             'E_tot': E_tot
         }
 
+    
     def _apply_k(self, ik, psi_nk_g):
         """Apply exchange operator K to wavefunction for closed-shell system.
         
@@ -979,12 +1060,10 @@ class KPWSCF(lib.StreamObject):
         # K-point weight: each k-point in the BZ contributes with weight 1/nk
         kpt_weight = 1.0 / self.nk
         
-       
+        # Loop over all k-points q
         for iq in range(self.nk):
-            
             k_diff = self.kpts[ik] - self.kpts[iq]
             
-
             if np.allclose(k_diff, 0):
                 coulG = self._coulG0 if self._coulG0 is not None else \
                         pbctools.get_coulG(self.cell, mesh=self.mesh, exxdiv=None)
@@ -992,13 +1071,31 @@ class KPWSCF(lib.StreamObject):
                 exxdiv_arg = None if self.exxdiv == 'ewald' else self.exxdiv
                 coulG = pbctools.get_coulG(self.cell, k=k_diff, mesh=self.mesh, exxdiv=exxdiv_arg)
 
-            
+            # Use replicated wavefunctions to prevent MPI deadlocks
+            if hasattr(self, '_psi_g_full') and self._psi_g_full is not None:
+                psi_q_all_bands = self._psi_g_full[iq]
+            else:
+                # Fallback if called outside kernel without sync
+                owner_rank = self.kpt_rank_map[iq]
+                local_idx = self.kpt_local_map[iq]
+                
+                if self.rank == owner_rank:
+                    psi_q_all_bands = self.psi_g[local_idx].copy()
+                else:
+                    psi_q_all_bands = np.empty((self.nband, self.ngrids), dtype=complex)
+                self.comm.Bcast(psi_q_all_bands, root=owner_rank)
             
             for m_occ in range(self.nocc):
-                
-                psi_qm_g = self.psi_g[iq, m_occ]
+                psi_qm_g = psi_q_all_bands[m_occ]
+                #psi_qm_g = self.psi_g[iq, m_occ]
                 k_q = self.kpts[iq]
+                
+                # We need IFFT of psi_qm_g. 
+                # Since we just received it in G-space, we perform IFFT locally.
+                # Note: psi_qm_g is normalized in G-space.
+                # _ifft_g2r handles the normalization and phase.
                 psi_qm_r = self._ifft_g2r(psi_qm_g, kpt=k_q)
+                
                 rho_r = psi_qm_r.conj() * psi_nk_r
                 rho_g = self._fft_density_r2g(rho_r, kpt=k_diff)
                 
@@ -1011,7 +1108,8 @@ class KPWSCF(lib.StreamObject):
         
         if self.exxdiv == 'ewald':
             madelung = pbctools.madelung(self.cell, self.kpts)
-            k_psi_g -= madelung * self.psi_g[ik, 0]
+
+            k_psi_g -= madelung * psi_nk_g
             
         return k_psi_g
 
@@ -1039,7 +1137,8 @@ class KPWSCF(lib.StreamObject):
         
         max_subspace_size = 3 * self.nband
         
-        subspace = [self.psi_g[ik, n].copy() for n in range(self.nband)]
+        ik_local = self.kpt_local_map[ik]
+        subspace = [self.psi_g[ik_local, n].copy() for n in range(self.nband)]
         
         for davidson_iter in range(max_cycle):
             nv = len(subspace)
@@ -1083,7 +1182,8 @@ class KPWSCF(lib.StreamObject):
                         davidson_iter + 1, max_res_norm)
                 break
             
-            hdiag = self._kin_diag[ik]
+            ik_local = self.kpt_local_map[ik]
+            hdiag = self._kin_diag[ik_local]
             for n in range(self.nband):
                 shift = 0.001
                 precond_denom = hdiag - (e_sorted[n] + shift)
@@ -1102,6 +1202,29 @@ class KPWSCF(lib.StreamObject):
         
         return psi_new, e_sorted
     
+
+    def _synchronize_wavefunctions(self):
+        """Replicate wavefunctions to all ranks to prevent MPI deadlocks.
+        
+        This creates a global copy self._psi_g_full containing wavefunctions for all k-points.
+        This must be called at a synchronized point (e.g., start of SCF cycle) to ensure
+        all ranks participate in the Bcast loop.
+        """
+        self._psi_g_full = np.zeros((self.nk, self.nband, self.ngrids), dtype=complex)
+        
+        # Synchronized loop to broadcast all k-points
+        for iq in range(self.nk):
+            owner_rank = self.kpt_rank_map[iq]
+            local_idx = self.kpt_local_map[iq]
+            
+            if self.rank == owner_rank:
+                psi_q_all_bands = self.psi_g[local_idx].copy()
+            else:
+                psi_q_all_bands = np.empty((self.nband, self.ngrids), dtype=complex)
+            
+            # Broadcast from owner to all ranks
+            self.comm.Bcast(psi_q_all_bands, root=owner_rank)
+            self._psi_g_full[iq] = psi_q_all_bands
 
     def kernel(self, init='minao', max_cycle=50, conv_tol=1e-7, conv_tol_rho=1e-6,
                with_k=True, davidson_tol=1e-6, davidson_max_cycle=5, mo_coeff=None, mo_occ=None,
@@ -1144,6 +1267,9 @@ class KPWSCF(lib.StreamObject):
         self.mo_energy = np.zeros((self.nk, self.nband), dtype=float)
         
         if hasattr(self, 'psi_r') and self.psi_r is not None:
+            # Synchronize wavefunctions before initial energy calculation
+            self._synchronize_wavefunctions()
+            
             energy_dict_init = self.compute_energy_components(with_k=with_k)
             e_init = energy_dict_init['E_tot']
             logger.info(self, '  Initial E_tot = %.10f Ha', e_init)
@@ -1154,14 +1280,21 @@ class KPWSCF(lib.StreamObject):
             logger.debug(self, '    E_nuc     = %.10f', energy_dict_init['E_nuc'])
             
             logger.debug(self, '  Initial orbital energies (before Davidson):')
-            for ik in range(self.nk):
+            # Compute density once globally to ensure all ranks participate in allreduce
+            rho_r_init = self.get_density_r()
+            
+            for i, ik in enumerate(self.kpts_local_idx):
                 for n in range(self.nband):
-                    psi_g_n = self.psi_g[ik, n]
-                    F_psi_g = self.apply_fock(ik, psi_g_n, with_j=True, with_k=with_k)
+                    psi_g_n = self.psi_g[i, n]
+                    # Pass precomputed rho_r
+                    F_psi_g = self.apply_fock(ik, psi_g_n, rho_r=rho_r_init, with_j=True, with_k=with_k)
                     e_orbital = np.vdot(psi_g_n.conj(), F_psi_g).real
                     self.mo_energy[ik, n] = e_orbital
                     if n < 4:
                         logger.debug(self, '    k=%d, band %d: e = %.6f Ha', ik, n, e_orbital)
+            
+            # Sync mo_energy (optional, but good for logging)
+            self.mo_energy = self.comm.allreduce(self.mo_energy, op=mpi.MPI.SUM)
             
         
         e_tot_prev = 0.0
@@ -1169,8 +1302,16 @@ class KPWSCF(lib.StreamObject):
         rho_r_mixed = None
         converged = False
         
+        self._psi_g_frozen = None
+        
         for scf_iter in range(1, max_cycle + 1):
             rho_r_computed = self.get_density_r()
+            
+            # Freeze wavefunctions for this SCF iteration
+            self._psi_g_frozen = self.psi_g.copy()
+            
+            # Replicate wavefunctions to all ranks
+            self._synchronize_wavefunctions()
             
             if rho_r_prev is not None and alpha < 1.0:
                 rho_r = alpha * rho_r_computed + (1.0 - alpha) * rho_r_prev
@@ -1183,7 +1324,11 @@ class KPWSCF(lib.StreamObject):
             else:
                 rho_norm = 1.0
             
-            for ik in range(self.nk):
+            # Zero out mo_energy before writing new values (critical for MPI!)
+            # Otherwise allreduce(SUM) will accumulate across SCF cycles
+            self.mo_energy[:] = 0.0
+            
+            for i, ik in enumerate(self.kpts_local_idx):
                 logger.debug(self, '  k-point %d/%d: Block Davidson diagonalization...', ik + 1, self.nk)
                 
                 psi_new, e_sorted = self._block_davidson(
@@ -1196,13 +1341,18 @@ class KPWSCF(lib.StreamObject):
                 )
                 
                 for n in range(self.nband):
-                    self.psi_g[ik, n] = psi_new[n]
-                    self.psi_r[ik, n] = self._ifft_g2r(psi_new[n])
+                    self.psi_g[i, n] = psi_new[n]
+                    self.psi_r[i, n] = self._ifft_g2r(psi_new[n])
                     self.mo_energy[ik, n] = e_sorted[n]
                 
                 logger.debug(self, '    mo_energy: %s', 
                             self.mo_energy[ik, :self.nband])
             
+            # Sync mo_energy for logging and next iteration checks
+            self.mo_energy = self.comm.allreduce(self.mo_energy, op=mpi.MPI.SUM)
+            
+            # Synchronize wavefunctions again after Davidson for correct exchange energy
+            self._synchronize_wavefunctions()
             
             energy_dict = self.compute_energy_components(with_k=with_k)
             e_tot = energy_dict['E_tot']
@@ -1248,6 +1398,24 @@ class KPWSCF(lib.StreamObject):
         
         return e_tot, converged
 
+
+@jit(nopython=True)
+def _contract_projectors(buf_slice, tmp_flat, si_ia, vnl_g):
+    """
+    Optimized contraction: vnl_g += (buf_slice.T.conj() @ tmp_flat) * si_ia
+    
+    buf_slice: (n_proj, ngrids) complex
+    tmp_flat: (n_proj,) complex
+    si_ia: (ngrids,) complex
+    vnl_g: (ngrids,) complex (in/out)
+    """
+    n_proj, ngrids = buf_slice.shape
+    
+    for g in range(ngrids):
+        dot_val = 0.0 + 0.0j
+        for p in range(n_proj):
+            dot_val += np.conj(buf_slice[p, g]) * tmp_flat[p]
+        vnl_g[g] += dot_val * si_ia[g]
 
 __all__ = ['KPWSCF']
 

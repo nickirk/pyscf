@@ -1,0 +1,110 @@
+         227 function calls (220 primitive calls) in 0.002 seconds
+
+   Ordered by: cumulative time
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      2/1    0.002    0.001    0.000    0.000 /Users/keliao/Work/project/pyscf/pyscf/pbc/scf/test/../kpwscf.py:28(__init__)
+      2/1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/pyfftw/interfaces/cache.py:97(enable)
+        2    0.000    0.000    0.000    0.000 /Users/keliao/Work/project/pyscf/pyscf/pbc/gto/cell.py:1673(vol)
+      2/1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/pyfftw/interfaces/cache.py:149(__init__)
+      2/1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:955(start)
+        1    0.000    0.000    0.000    0.000 {built-in method _thread.start_joinable_thread}
+        2    0.000    0.000    0.000    0.000 /Users/keliao/Work/project/pyscf/pyscf/pbc/gto/cell.py:1297(nelec)
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/lib/_shape_base_impl.py:749(array_split)
+        2    0.000    0.000    0.000    0.000 /Users/keliao/Work/project/pyscf/pyscf/gto/mole.py:2389(nelectron)
+        2    0.000    0.000    0.000    0.000 /Users/keliao/Work/project/pyscf/pyscf/pbc/gto/cell.py:946(tot_electrons)
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/linalg/_linalg.py:2380(det)
+       14    0.000    0.000    0.000    0.000 {built-in method builtins.hasattr}
+        1    0.000    0.000    0.000    0.000 {method 'disable' of '_lsprof.Profiler' objects}
+        1    0.000    0.000    0.000    0.000 /Users/keliao/Work/project/pyscf/pyscf/pbc/dft/gen_grid.py:88(weights)
+      2/1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:641(wait)
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:620(set)
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:327(wait)
+        2    0.000    0.000    0.000    0.000 /Users/keliao/Work/project/pyscf/pyscf/gto/mole.py:3162(atom_charges)
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:3328(prod)
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:869(__init__)
+        2    0.000    0.000    0.000    0.000 /Users/keliao/Work/project/pyscf/pyscf/pbc/gto/cell.py:1713(lattice_vectors)
+        6    0.000    0.000    0.000    0.000 {method 'reduce' of 'numpy.ufunc' objects}
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:428(notify_all)
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:69(_wrapreduction)
+        4    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:592(__init__)
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:398(notify)
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/_core/numeric.py:1957(_frombuffer)
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:2477(any)
+        4    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:281(__init__)
+        1    0.000    0.000    0.000    0.000 /Users/keliao/Work/project/pyscf/pyscf/pbc/scf/test/../kpwscf.py:115(_select_mesh)
+        1    0.000    0.000    0.000    0.000 {method 'cumsum' of 'numpy.ndarray' objects}
+        2    0.000    0.000    0.000    0.000 {method 'astype' of 'numpy.generic' objects}
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/linalg/_linalg.py:207(_commonType)
+        1    0.000    0.000    0.000    0.000 {built-in method numpy.arange}
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:89(_wrapreduction_any_all)
+        7    0.000    0.000    0.000    0.000 {built-in method numpy.asarray}
+        3    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:318(_is_owned)
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:577(swapaxes)
+        2    0.000    0.000    0.000    0.000 {method 'sum' of 'numpy.ndarray' objects}
+      6/4    0.000    0.000    0.000    0.000 {method 'acquire' of '_thread.lock' objects}
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:51(_wrapfunc)
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:631(clear)
+        2    0.000    0.000    0.000    0.000 /Users/keliao/Work/project/pyscf/pyscf/gto/mole.py:2167(is_au)
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/_core/_methods.py:49(_sum)
+        4    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:303(__enter__)
+        1    0.000    0.000    0.000    0.000 {built-in method numpy.array}
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:1136(is_alive)
+        4    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:306(__exit__)
+        3    0.000    0.000    0.000    0.000 {method 'reshape' of 'numpy.ndarray' objects}
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:1429(current_thread)
+        1    0.000    0.000    0.000    0.000 {built-in method numpy.frombuffer}
+        1    0.000    0.000    0.000    0.000 /Users/keliao/Work/project/pyscf/pyscf/pbc/dft/gen_grid.py:68(__init__)
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/_weakrefset.py:85(add)
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:1162(daemon)
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:1024(_set_native_id)
+        2    0.000    0.000    0.000    0.000 {method 'release' of '_thread.lock' objects}
+        5    0.000    0.000    0.000    0.000 {built-in method builtins.len}
+        5    0.000    0.000    0.000    0.000 {built-in method builtins.isinstance}
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/linalg/_linalg.py:201(_realType)
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/linalg/_linalg.py:256(_assert_stacked_square)
+        4    0.000    0.000    0.000    0.000 {method '__enter__' of '_thread.lock' objects}
+        4    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/linalg/_linalg.py:187(isComplexType)
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:1267(_make_invoke_excepthook)
+        1    0.000    0.000    0.000    0.000 {built-in method numpy.empty}
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/pyfftw/interfaces/cache.py:236(set_keepalive_time)
+        2    0.000    0.000    0.000    0.000 {built-in method numpy.zeros}
+        2    0.000    0.000    0.000    0.000 {method 'swapaxes' of 'numpy.ndarray' objects}
+        4    0.000    0.000    0.000    0.000 {method 'items' of 'dict' objects}
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/_core/__init__.py:151(_DType_reduce)
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:312(_release_save)
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:1020(_set_ident)
+        2    0.000    0.000    0.000    0.000 /Users/keliao/Work/project/pyscf/pyscf/lib/logger.py:142(debug)
+        2    0.000    0.000    0.000    0.000 {method 'startswith' of 'str' objects}
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:1147(daemon)
+        2    0.000    0.000    0.000    0.000 {built-in method builtins.getattr}
+        3    0.000    0.000    0.000    0.000 {built-in method _thread.get_ident}
+        6    0.000    0.000    0.000    0.000 {built-in method builtins.issubclass}
+        1    0.000    0.000    0.000    0.000 {built-in method builtins.sum}
+        4    0.000    0.000    0.000    0.000 {method '__exit__' of '_thread.lock' objects}
+        2    0.000    0.000    0.000    0.000 {built-in method time.time}
+        1    0.000    0.000    0.000    0.000 {built-in method builtins.divmod}
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:315(_acquire_restore)
+        1    0.000    0.000    0.000    0.000 {method 'add' of 'set' objects}
+        1    0.000    0.000    0.000    0.000 {method 'append' of 'collections.deque' objects}
+        2    0.000    0.000    0.000    0.000 {method '__exit__' of '_thread.RLock' objects}
+        4    0.000    0.000    0.000    0.000 /Users/keliao/Work/project/pyscf/pyscf/pbc/gto/cell.py:1263(mesh)
+        5    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/threading.py:605(is_set)
+        2    0.000    0.000    0.000    0.000 {method 'get' of 'dict' objects}
+        1    0.000    0.000    0.000    0.000 {method 'remove' of 'collections.deque' objects}
+        1    0.000    0.000    0.000    0.000 {built-in method _weakref.proxy}
+        2    0.000    0.000    0.000    0.000 {built-in method builtins.abs}
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:3323(_prod_dispatcher)
+        1    0.000    0.000    0.000    0.000 {built-in method builtins.min}
+        2    0.000    0.000    0.000    0.000 {method 'upper' of 'str' objects}
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/linalg/_linalg.py:553(_unary_dispatcher)
+        1    0.000    0.000    0.000    0.000 {built-in method _thread.allocate_lock}
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:573(_swapaxes_dispatcher)
+        1    0.000    0.000    0.000    0.000 {method 'append' of 'list' objects}
+        1    0.000    0.000    0.000    0.000 {method 'is_done' of '_thread._ThreadHandle' objects}
+        2    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/_core/fromnumeric.py:2472(_any_dispatcher)
+        1    0.000    0.000    0.000    0.000 /opt/homebrew/Caskroom/miniconda/base/envs/pyscf/lib/python3.13/site-packages/numpy/lib/_shape_base_impl.py:745(_array_split_dispatcher)
+        1    0.000    0.000    0.000    0.000 {built-in method _thread.daemon_threads_allowed}
+        1    0.000    0.000    0.000    0.000 {built-in method _thread.get_native_id}
+
+

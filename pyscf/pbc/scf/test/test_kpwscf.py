@@ -923,7 +923,7 @@ class TestKPWSCFAE(unittest.TestCase):
         from pyscf.pbc.dft import numint
         print("\nDiagnostic: Evaluating KRHF k=1 orbital on grid...")
         
-        meshes = [40]
+        meshes = [120]
         energies_pw = []
         
         for m in meshes:
@@ -942,7 +942,7 @@ class TestKPWSCFAE(unittest.TestCase):
             print(f"KRHF k=1, n=0 on KPWSCF grid (before build):") 
             print(f"  |psi_r|^2 sum: {norm_krhf:.10f}")
             
-            mf_pw.verbose = 4
+            mf_pw.verbose = 5
             mf_pw.build()
             
             # NOW compute kinetic energy after build (when _fft_r2g and _Gv are available)
