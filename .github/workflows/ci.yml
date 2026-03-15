@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-20.04]
+        os: [ubuntu-latest]
         python-version: ["3.8", "3.12"]
     steps:
       - uses: actions/checkout@v3
@@ -46,7 +46,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-20.04]
+        os: [ubuntu-latest]
         pyver: [cp39-cp39]
     env:
       img: quay.io/pypa/manylinux2014_aarch64
@@ -79,11 +79,11 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        python-version: ["3.10"]
+        python-version: ["3.13"]
     steps:
       - uses: actions/checkout@v3
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install and Test

@@ -81,21 +81,40 @@ def _gaussian_smearing_occ(mu, mo_energy, sigma):
     return 0.5 * scipy.special.erfc((mo_energy - mu) / sigma)
 
 def _smearing_optimize(f_occ, mo_es, nocc, sigma):
-    def nelec_cost_fn(m):
+    def rootfn(m):
         mo_occ = f_occ(m, mo_es, sigma)
-        return (mo_occ.sum() - nocc)**2
+        return mo_occ.sum() - nocc
 
-    fermi = _get_fermi(mo_es, nocc)
-    res = scipy.optimize.minimize(
-        nelec_cost_fn, fermi, method='Powell',
-        options={'xtol': 1e-5, 'ftol': 1e-5, 'maxiter': 10000})
-    mu = res.x
-    mo_occs = f_occ(mu, mo_es, sigma)
-    return mu, mo_occs
+    # it's okay to set small xtol according to the docs.
+    mu = scipy.optimize.bisect(rootfn, mo_es.min()-10., mo_es.max()+10.,
+                               xtol=1e-16, maxiter=10000)
+
+    cur_err = abs(rootfn(mu))
+
+    # Check if we can further improve mu by moving it up/down
+    # by the minimum machine-representable amount.
+    # In many cases with Fermi-type smearing and sigma~1e-6,
+    # the minimum possible error is still >1e-11 because the
+    # smearing function is just so sharp. Because xtol is set to 1e-16 above,
+    # this should not take too many iterations.
+
+    iters, maxiter = 0, 1000
+
+    while abs(rootfn(numpy.nextafter(mu, numpy.inf))) < cur_err and iters < maxiter:
+        mu = numpy.nextafter(mu, numpy.inf)
+        cur_err = abs(rootfn(mu))
+        iters += 1
+
+    while abs(rootfn(numpy.nextafter(mu, -numpy.inf))) < cur_err and iters < maxiter:
+        mu = numpy.nextafter(mu, -numpy.inf)
+        cur_err = abs(rootfn(mu))
+        iters += 1
+
+    return mu, f_occ(mu, mo_es, sigma)
 
 def _get_fermi(mo_energy, nocc):
     mo_e_sorted = numpy.sort(mo_energy)
-    if isinstance(nocc, int):
+    if isinstance(nocc, (int, numpy.integer)):
         return mo_e_sorted[nocc-1]
     else: # nocc = ?.5 or nocc = ?.0
         return mo_e_sorted[numpy.ceil(nocc).astype(int) - 1]

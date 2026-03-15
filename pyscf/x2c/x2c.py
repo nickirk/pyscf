@@ -271,9 +271,10 @@ class X2CHelperBase(lib.StreamObject):
         s1 = s + reduce(numpy.dot, (x.conj().T, t, x)) * (.5/c**2)
         return _get_r(s, s1)
 
-    def reset(self, mol):
+    def reset(self, mol=None):
         '''Reset mol and clean up relevant attributes for scanner mode'''
-        self.mol = mol
+        if mol is not None:
+            self.mol = mol
         return self
 
 class SpinorX2CHelper(X2CHelperBase):
@@ -312,7 +313,7 @@ class SpinOrbitalX2CHelper(X2CHelperBase):
             # spin-orbital basis is twice the size of NR basis
             atom_slices[:,2:] *= 2
             nao = xmol.nao_nr() * 2
-            x = numpy.zeros((nao,nao))
+            x = numpy.zeros((nao,nao), dtype=numpy.complex128)
             for ia in range(xmol.natm):
                 ish0, ish1, p0, p1 = atom_slices[ia]
                 shls_slice = (ish0, ish1, ish0, ish1)
@@ -374,7 +375,7 @@ class SpinOrbitalX2CHelper(X2CHelperBase):
             # spin-orbital basis is twice the size of NR basis
             atom_slices[:,2:] *= 2
             nao = xmol.nao_nr() * 2
-            x = numpy.zeros((nao,nao))
+            x = numpy.zeros((nao,nao), dtype=numpy.complex128)
             for ia in range(xmol.natm):
                 ish0, ish1, p0, p1 = atom_slices[ia]
                 shls_slice = (ish0, ish1, ish0, ish1)
@@ -732,7 +733,7 @@ class _X2C_SCF:
             self.with_x2c.dump_flags(verbose)
         return self
 
-    def reset(self, mol):
+    def reset(self, mol=None):
         self.with_x2c.reset(mol)
         return super().reset(mol)
 
