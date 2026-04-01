@@ -78,7 +78,7 @@ class RSGDF(GDF):
     _keys = {
         'use_bvk', 'precision_R', 'precision_G', 'npw_max', '_omega_min',
         'omega', 'ke_cutoff', 'mesh_compact', 'omega_j2c', 'mesh_j2c',
-        'precision_j2c', 'j2c_eig_always', 'kpts',
+        'precision_j2c', 'j2c_eig_always', 'kpts', 'exxdiv',
     }
 
     def weighted_coulG(self, kpt=np.zeros(3), exx=False, mesh=None, omega=None):
@@ -132,6 +132,14 @@ cell.dimension=3 with large vacuum.""")
         # decomposition (ED); otherwise, Cholesky decomposition (CD) is used
         # first, and ED is called only if CD fails.
         self.j2c_eig_always = False
+
+        # Truncated Coulomb for HF-exchange TDL convergence acceleration.
+        # Accepted values: None (standard ewald), 'vcut_sph' (PRB 77, 193110),
+        # 'vcut_ws' (PRB 87, 165122).  When set, the long-range part of both
+        # j3c and j2c is built with the vcut-modified Coulomb kernel instead of
+        # the bare 4π/G² kernel, so exchange computed from the stored cderi
+        # converges to the TDL at the same accelerated rate as FFTDF with vcut.
+        self.exxdiv = None
 
         GDF.__init__(self, cell, kpts=kpts)
 
@@ -323,7 +331,7 @@ class _RSGDFBuilder(rsdf_builder._RSGDFBuilder):
     _keys = {
         'use_bvk', 'precision_R', 'precision_G', 'npw_max', '_omega_min',
         'omega', 'ke_cutoff', 'mesh_compact', 'omega_j2c', 'mesh_j2c',
-        'precision_j2c', 'j2c_eig_always', 'kpts',
+        'precision_j2c', 'j2c_eig_always', 'kpts', 'exxdiv',
     }
 
     def __init__(self, cell, auxcell, kpts=np.zeros((1,3))):
@@ -402,7 +410,10 @@ class _RSGDFBuilder(rsdf_builder._RSGDFBuilder):
                     qaux2 = np.outer(qaux,qaux)
                 j2c[k] -= qaux2 * g0_j2c
             # long-range part via aft
-            coulG_lr = self.weighted_coulG(kpt, mesh=mesh_j2c, omega=omega_j2c)
+            if self.exxdiv:
+                coulG_lr = self.weighted_coulG_LR_vcut(kpt, mesh=mesh_j2c, omega=omega_j2c)
+            else:
+                coulG_lr = self.weighted_coulG(kpt, mesh=mesh_j2c, omega=omega_j2c)
             for p0, p1 in lib.prange(0, ngrids, blksize):
                 auxG = ft_ao.ft_ao(auxcell, Gv[p0:p1], None, b, gxyz[p0:p1], Gvbase, kpt).T
                 auxGR = np.asarray(auxG.real, order='C')
@@ -443,6 +454,35 @@ class _RSGDFBuilder(rsdf_builder._RSGDFBuilder):
                                       precision=self.precision_R)
         return fswap
 
+    def weighted_coulG_LR_vcut(self, kpt=np.zeros(3), mesh=None, omega=None):
+        '''Vcut-modified LR Coulomb kernel weighted by integration weights.
+
+        Returns vcut(G) * exp(-G^2 / (4*omega^2)) * kws, where vcut is either
+        the spherical truncation (vcut_sph) or the Wigner-Seitz truncation
+        (vcut_ws) selected by self.exxdiv.  Unlike the standard LR kernel
+        (which sets G=0 to zero), the vcut LR kernel has a finite G=0 value
+        (e.g. 2*pi*Rc^2 for vcut_sph) that is included in the returned array.
+
+        Args:
+            kpt:   (3,) k-point shift used for the k+G vectors
+            mesh:  (3,) int mesh; defaults to self.mesh
+            omega: range-separation parameter (pass self.omega for j3c,
+                   omega_j2c for j2c)
+
+        Returns:
+            (ngrids,) ndarray of weighted Coulomb kernel values
+        '''
+        from pyscf.pbc.tools import pbc as pbctools
+        cell = self.cell
+        if mesh is None:
+            mesh = self.mesh
+        Gv, Gvbase, kws = cell.get_Gv_weights(mesh)
+        # mf=self gives get_coulG access to self.kpts (needed to compute Rc
+        # for vcut_sph) and caches _ws_exx on the builder for vcut_ws.
+        coulG = pbctools.get_coulG(cell, kpt, exx=self.exxdiv,
+                                   mf=self, mesh=mesh, Gv=Gv, omega=omega)
+        return coulG * kws
+
     def weighted_ft_ao(self, kpt):
         cell = self.cell
         auxcell = self.auxcell
@@ -452,7 +492,10 @@ class _RSGDFBuilder(rsdf_builder._RSGDFBuilder):
         gxyz = lib.cartesian_prod([np.arange(len(x)) for x in Gvbase])
         shls_slice = (0, auxcell.nbas)
         auxG = ft_ao.ft_ao(auxcell, Gv, shls_slice, b, gxyz, Gvbase, kpt).T
-        wcoulG_lr = self.weighted_coulG(kpt, mesh=mesh, omega=self.omega)
+        if self.exxdiv:
+            wcoulG_lr = self.weighted_coulG_LR_vcut(kpt, mesh=mesh, omega=self.omega)
+        else:
+            wcoulG_lr = self.weighted_coulG(kpt, mesh=mesh, omega=self.omega)
         auxG *= wcoulG_lr
         Gaux = lib.transpose(auxG)
         GauxR = np.asarray(Gaux.real, order='C')
@@ -464,7 +507,11 @@ class _RSGDFBuilder(rsdf_builder._RSGDFBuilder):
         kpts = self.kpts
         nkpts = len(self.kpts)
         vbar = None
-        if is_zero(kpt) and cell.dimension == 3:
+        # vbar corrects for the G=0 term that the standard LR kernel zeros out
+        # (4pi/G^2 * exp(-G^2/4w^2) -> 0 as G->0).  With vcut kernels the G=0
+        # value is finite and already included in the AFT sum via
+        # weighted_coulG_LR_vcut, so vbar must not be applied.
+        if is_zero(kpt) and cell.dimension == 3 and not self.exxdiv:
             qaux = get_aux_chg(self.auxcell)
             vbar = np.pi / self.omega**2 / cell.vol * qaux
             vbar_idx = np.where(vbar != 0)[0]
